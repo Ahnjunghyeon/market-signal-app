@@ -10,18 +10,18 @@
     "qa": "npm run typecheck && npm run build"
   },
   "dependencies": {
-    "next": "16.2.9",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "lucide-react": "^0.468.0",
     "adm-zip": "^0.5.16",
-    "iconv-lite": "^0.6.3"
+    "iconv-lite": "^0.6.3",
+    "lucide-react": "^0.468.0",
+    "next": "^15.5.4",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
     "@types/node": "^22.10.2",
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
-    "typescript": "^5.7.2",
-    "@types/adm-zip": "^0.5.7"
+    "typescript": "^5.7.2"
   }
 }
