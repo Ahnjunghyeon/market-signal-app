@@ -350,6 +350,71 @@ export default function HomePage() {
       cleanups.forEach((cleanup) => cleanup());
     };
   }, [feedMode, watchStocks.length]);
+
+  useEffect(() => {
+    const target = summaryGridRef.current;
+    if (!target) return;
+
+    const mediaQuery = window.matchMedia("(max-width: 768px)");
+    let resumeTimer: number | undefined;
+
+    const canAutoSlide = () =>
+      feedMode === "home" &&
+      mediaQuery.matches &&
+      target.scrollWidth > target.clientWidth + 4;
+
+    const pauseAutoSlide = () => {
+      target.dataset.autoPaused = "true";
+      window.clearTimeout(resumeTimer);
+      resumeTimer = window.setTimeout(() => {
+        delete target.dataset.autoPaused;
+      }, 5000);
+    };
+
+    const slideToNextCard = () => {
+      if (!canAutoSlide()) return;
+      if (target.dataset.autoPaused === "true" || document.hidden) return;
+
+      const firstCard = target.querySelector<HTMLElement>(".summary-card");
+      if (!firstCard) return;
+
+      const styles = window.getComputedStyle(target);
+      const gap =
+        Number.parseFloat(styles.columnGap || styles.gap || "0") || 12;
+      const step = firstCard.offsetWidth + gap;
+      const isNearEnd =
+        target.scrollLeft + target.clientWidth >= target.scrollWidth - 8;
+
+      target.scrollTo({
+        left: isNearEnd ? 0 : target.scrollLeft + step,
+        behavior: "smooth",
+      });
+    };
+
+    const handleMediaChange = () => {
+      if (!mediaQuery.matches) target.scrollTo({ left: 0 });
+    };
+
+    const intervalId = window.setInterval(slideToNextCard, 3600);
+
+    target.addEventListener("pointerdown", pauseAutoSlide);
+    target.addEventListener("touchstart", pauseAutoSlide, { passive: true });
+    target.addEventListener("wheel", pauseAutoSlide, { passive: true });
+    target.addEventListener("focusin", pauseAutoSlide);
+    mediaQuery.addEventListener("change", handleMediaChange);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.clearTimeout(resumeTimer);
+      target.removeEventListener("pointerdown", pauseAutoSlide);
+      target.removeEventListener("touchstart", pauseAutoSlide);
+      target.removeEventListener("wheel", pauseAutoSlide);
+      target.removeEventListener("focusin", pauseAutoSlide);
+      mediaQuery.removeEventListener("change", handleMediaChange);
+      delete target.dataset.autoPaused;
+    };
+  }, [feedMode]);
+
   const watchSet = useMemo(
     () => new Set(unique([...watchThemes, ...watchStocks, ...expandedStocks])),
     [watchThemes, watchStocks, expandedStocks],

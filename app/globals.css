@@ -6413,3 +6413,16 @@ html[data-theme="musinsa"] .pull-refresh-meter::before {
   background:
     linear-gradient(90deg, rgba(236,72,153,.20), rgba(139,61,255,.30)) !important;
 }
+
+/* v10.3.8 hotfix - responsive summary auto carousel */
+@media (max-width: 768px) {
+  .summary-grid {
+    scroll-behavior: smooth;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .summary-grid.is-dragging,
+  .summary-grid[data-auto-paused="true"] {
+    scroll-behavior: auto;
+  }
+}
