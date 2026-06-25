@@ -188,6 +188,9 @@ export default function HomePage() {
     useState("뉴스를 새로고침하고 있습니다.");
   const [pullDistance, setPullDistance] = useState(0);
   const [pullRefreshing, setPullRefreshing] = useState(false);
+  const pullDistanceRef = useRef(0);
+  const feedModeRef = useRef<FeedMode>("home");
+  const fullRefreshVisibleRef = useRef(false);
 
   const expandedStocks = useMemo(
     () => expandStockKeywords(watchStocks, stockCatalog),
@@ -202,6 +205,14 @@ export default function HomePage() {
   useEffect(() => {
     watchlistRef.current = watchlist;
   }, [watchlist]);
+
+  useEffect(() => {
+    feedModeRef.current = feedMode;
+  }, [feedMode]);
+
+  useEffect(() => {
+    fullRefreshVisibleRef.current = fullRefreshVisible;
+  }, [fullRefreshVisible]);
 
   function resolveWatchStock(name: string, index: number) {
     const candidate = findStockSuggestions(name, 1, stockCatalog)[0];
@@ -437,8 +448,31 @@ export default function HomePage() {
         return item.marketRegion === country;
       });
     }
+
+    if (feedMode === "home" && pinnedNewsIds.length > 0) {
+      const priority = new Map(
+        pinnedNewsIds.map((id, index) => [id, index] as const),
+      );
+      source = [...source].sort((a, b) => {
+        const aPriority = priority.get(a.id);
+        const bPriority = priority.get(b.id);
+        if (aPriority === undefined && bPriority === undefined) return 0;
+        if (aPriority === undefined) return 1;
+        if (bPriority === undefined) return -1;
+        return aPriority - bPriority;
+      });
+    }
+
     return source;
-  }, [country, feedMode, alertNews, importantNews, myStockNews, sortedNews]);
+  }, [
+    country,
+    feedMode,
+    alertNews,
+    importantNews,
+    myStockNews,
+    pinnedNewsIds,
+    sortedNews,
+  ]);
 
   const visibleNews = filteredNews.slice(0, visibleCount);
   const hasMore = visibleCount < filteredNews.length;
@@ -931,9 +965,10 @@ export default function HomePage() {
   useEffect(() => {
     let startY = 0;
     let tracking = false;
+    let lastDistance = 0;
 
     function handleTouchStart(event: TouchEvent) {
-      if (window.scrollY > 2 || fullRefreshVisible) return;
+      if (window.scrollY > 2 || fullRefreshVisibleRef.current) return;
       const target = event.target;
       if (
         target instanceof Element &&
@@ -943,13 +978,19 @@ export default function HomePage() {
       )
         return;
       startY = event.touches[0]?.clientY || 0;
+      lastDistance = 0;
+      pullDistanceRef.current = 0;
       tracking = true;
     }
 
     function handleTouchMove(event: TouchEvent) {
       if (!tracking) return;
       const y = event.touches[0]?.clientY || 0;
-      const distance = Math.max(0, Math.min(118, (y - startY) * 0.62));
+      const rawDistance = y - startY;
+      if (rawDistance <= 0) return;
+      const distance = Math.max(0, Math.min(118, rawDistance * 0.62));
+      lastDistance = distance;
+      pullDistanceRef.current = distance;
       if (distance > 6) {
         event.preventDefault();
         setPullDistance(distance);
@@ -959,20 +1000,23 @@ export default function HomePage() {
     function handleTouchEnd() {
       if (!tracking) return;
       tracking = false;
-      const shouldRefresh = pullDistance >= 86;
+      const shouldRefresh = Math.max(lastDistance, pullDistanceRef.current) >= 86;
       if (shouldRefresh) {
+        setPullDistance(86);
         setPullRefreshing(true);
         void loadNews(
-          true,
-          feedMode === "stocks",
+          false,
+          feedModeRef.current === "stocks",
           watchlistRef.current,
         ).finally(() => {
           window.setTimeout(() => {
+            pullDistanceRef.current = 0;
             setPullRefreshing(false);
             setPullDistance(0);
-          }, 500);
+          }, 650);
         });
       } else {
+        pullDistanceRef.current = 0;
         setPullDistance(0);
       }
     }
@@ -987,7 +1031,7 @@ export default function HomePage() {
       window.removeEventListener("touchend", handleTouchEnd);
       window.removeEventListener("touchcancel", handleTouchEnd);
     };
-  }, [feedMode, fullRefreshVisible, loadNews, pullDistance]);
+  }, [loadNews]);
 
   useEffect(() => {
     let lastY = window.scrollY;
@@ -1963,7 +2007,7 @@ export default function HomePage() {
             <Moon size={17} />
             테마 변경
             <span>
-              {appTheme === "musinsa" ? "무신사 블랙" : "라이트 퍼플"}
+              {appTheme === "musinsa" ? "블랙 앤 퍼플" : "라이트 퍼플"}
             </span>
           </button>
           <button

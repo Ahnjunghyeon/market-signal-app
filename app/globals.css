@@ -6350,3 +6350,66 @@ html[data-theme="musinsa"] .alert-clear-btn {
 .mini-star:hover {
   filter: none !important;
 }
+
+
+/* SKIM hotfix: responsive settings stability, theme label polish, and pull refresh meter.
+   - Settings rows should not shake on mobile tap.
+   - Keep block depth in light purple without movement.
+   - Pull refresh meter becomes a natural progress pill while dragging. */
+@media (max-width: 860px) {
+  .settings-screen .settings-list-card,
+  .settings-list-card {
+    transform: none !important;
+    will-change: auto !important;
+  }
+
+  .settings-screen .settings-list-card:hover,
+  .settings-list-card:hover,
+  .settings-screen .settings-list-card:active,
+  .settings-list-card:active {
+    transform: none !important;
+    filter: none !important;
+  }
+
+  .settings-screen .settings-list-card > button,
+  .settings-list-card > button {
+    transform: none !important;
+    will-change: auto !important;
+    transition:
+      background .24s ease,
+      border-color .24s ease,
+      box-shadow .24s ease,
+      color .24s ease !important;
+  }
+
+  .settings-screen .settings-list-card > button:hover,
+  .settings-list-card > button:hover,
+  .settings-screen .settings-list-card > button:active,
+  .settings-list-card > button:active {
+    transform: none !important;
+    filter: none !important;
+  }
+}
+
+.pull-refresh-meter {
+  overflow: hidden !important;
+  isolation: isolate !important;
+}
+
+.pull-refresh-meter::before {
+  content: "" !important;
+  position: absolute !important;
+  inset: 0 !important;
+  width: var(--pull, 0%) !important;
+  border-radius: inherit !important;
+  background:
+    linear-gradient(90deg, rgba(236,72,153,.18), rgba(139,61,255,.24)) !important;
+  opacity: .95 !important;
+  transition: width .18s ease !important;
+  z-index: -1 !important;
+}
+
+html[data-theme="musinsa"] .pull-refresh-meter::before {
+  background:
+    linear-gradient(90deg, rgba(236,72,153,.20), rgba(139,61,255,.30)) !important;
+}
