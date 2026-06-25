@@ -1,4 +1,4 @@
-# Market Signal v5.4
+# Market Signal v4.9
 
 ## 수정 내용
 

@@ -1,10 +1,10 @@
 {
-  "name": "Market Signal",
-  "short_name": "Signal",
-  "description": "실시간 중요 경제뉴스 스캐너",
+  "name": "SKIM",
+  "short_name": "SKIM",
+  "description": "실시간 중요 경제뉴스 브리핑",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#080a12",
-  "theme_color": "#080a12",
+  "background_color": "#fff8ff",
+  "theme_color": "#fff8ff",
   "icons": []
 }

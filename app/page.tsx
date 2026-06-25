@@ -1,1228 +1,2368 @@
-'use client';
+"use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { Bell, BriefcaseBusiness, ChevronDown, Flame, Home as HomeIcon, Loader2, Pin, Plus, Radar, RefreshCw, Search, Settings2, Sparkles, Trash2, Wifi, X } from 'lucide-react';
-import NewsCard from '@/components/NewsCard';
-import { sortNews } from '@/lib/scoring';
-import { expandStockKeywords, findStockSuggestions, getStockSearchTokens, matchesStockQuery, type StockCandidate } from '@/lib/stockUniverse';
-import type { MarketNews, NewsApiResponse } from '@/types/news';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type CSSProperties,
+  type FormEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
+import {
+  Bell,
+  Bookmark,
+  BriefcaseBusiness,
+  ChartNoAxesCombined,
+  ChevronRight,
+  Clock3,
+  DatabaseZap,
+  Home,
+  Loader2,
+  LogOut,
+  Menu,
+  Moon,
+  Plus,
+  RefreshCw,
+  Search,
+  Settings,
+  SlidersHorizontal,
+  Sparkles,
+  Star,
+  Trash2,
+  Wifi,
+  X,
+} from "lucide-react";
+import NewsCard from "@/components/NewsCard";
+import { mockNews } from "@/lib/mockNews";
+import { sortNews } from "@/lib/scoring";
+import {
+  expandStockKeywords,
+  findStockSuggestions,
+  getStockSearchTokens,
+  type StockCandidate,
+} from "@/lib/stockUniverse";
+import type { MarketNews, NewsApiResponse } from "@/types/news";
 
-const CACHE_KEY = 'market-signal:last-news:v5.7';
-const WATCHLIST_KEY = 'market-signal:watchlist:v4.8';
-const THRESHOLD_KEY = 'market-signal:threshold:v4.8';
-const PINNED_KEY = 'market-signal:pinned-news:v4.8';
-const STOCKS_CACHE_KEY = 'market-signal:stock-master:v5.7';
-const defaultThemes: string[] = [];
+const CACHE_KEY = "news-briefing:v7:news";
+const WATCHLIST_KEY = "news-briefing:v7:watchlist";
+const THRESHOLD_KEY = "news-briefing:v7:threshold";
+const AI_STOCK_THRESHOLD_KEY = "news-briefing:v7:ai-stock-threshold";
+const APP_THEME_KEY = "news-briefing:v8:theme";
+const QUICK_MENU_KEY = "news-briefing:v8:quick-menu";
+const PINNED_KEY = "news-briefing:v7:pinned";
+const PAGE_SIZE = 7;
+const defaultThemes = ["AI", "반도체", "HBM"];
 const defaultStocks: string[] = [];
-const PAGE_SIZE = 6;
-const CLIENT_TIMEOUT_MS = 4800;
-const INTRO_MIN_MS = 850;
-const INTRO_MAX_MS = 2200;
-const loadingMessages = ['시장 뉴스를 연결하는 중', '최신 기사를 불러오는 중', '공식뉴스와 의견글을 분류하는 중', '중요도 점수를 정렬하는 중'];
 
-type FeedMode = 'all' | 'mystocks' | 'korea' | 'us' | 'global' | 'trusted' | 'hot' | 'opinion' | 'settings';
+type FeedMode =
+  | "home"
+  | "stocks"
+  | "aiStocks"
+  | "scanner"
+  | "news"
+  | "search"
+  | "alerts"
+  | "settings";
+type AppTheme = "light" | "musinsa";
+type CountryFilter = "all" | "korea" | "us" | "global";
 type WatchState = { themes: string[]; stocks: string[] };
+type QuoteMap = Record<
+  string,
+  { priceText: string; changeText: string; changeRate: number | null }
+>;
 
-function uniqueValues(values: string[]) {
-  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+function unique(values: string[]) {
+  return Array.from(
+    new Set(values.map((value) => value.trim()).filter(Boolean)),
+  );
 }
 
-function safeArray(value: unknown): MarketNews[] {
-  return Array.isArray(value) ? value as MarketNews[] : [];
+function safeNews(value: unknown): MarketNews[] {
+  return Array.isArray(value) ? (value as MarketNews[]) : [];
 }
 
 function normalizeWatchState(value: unknown): WatchState {
-  if (Array.isArray(value)) {
-    return { themes: uniqueValues(value as string[]), stocks: [] };
-  }
-  if (value && typeof value === 'object') {
-    const state = value as Partial<WatchState>;
+  if (Array.isArray(value))
+    return { themes: unique(value as string[]), stocks: [] };
+  if (value && typeof value === "object") {
+    const item = value as Partial<WatchState>;
     return {
-      themes: uniqueValues(Array.isArray(state.themes) ? state.themes : defaultThemes),
-      stocks: uniqueValues(Array.isArray(state.stocks) ? state.stocks : defaultStocks)
+      themes: unique(Array.isArray(item.themes) ? item.themes : defaultThemes),
+      stocks: unique(Array.isArray(item.stocks) ? item.stocks : defaultStocks),
     };
   }
   return { themes: defaultThemes, stocks: defaultStocks };
 }
 
-function SkeletonFeed() {
-  return (
-    <div className="skeleton-list" aria-label="뉴스 목록 준비 중">
-      {Array.from({ length: 3 }).map((_, index) => (
-        <div className="skeleton-card" key={index}>
-          <div className="skeleton-line short" />
-          <div className="skeleton-line title" />
-          <div className="skeleton-line" />
-          <div className="skeleton-line mid" />
-        </div>
-      ))}
-    </div>
-  );
+function scoreLabel(score: number) {
+  if (score >= 90) return "매우 높음";
+  if (score >= 80) return "높음";
+  if (score >= 70) return "관찰";
+  return "보통";
 }
 
-function fallbackResponse(message: string): NewsApiResponse {
+function formatTime(value: string) {
+  if (!value) return "-";
+  try {
+    return new Date(value).toLocaleString("ko-KR", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "-";
+  }
+}
+
+function fallbackResponse(
+  message = "대체 뉴스를 표시했습니다.",
+): NewsApiResponse {
   return {
-    news: [],
+    news: mockNews,
     generatedAt: new Date().toISOString(),
-    sourceMode: 'fallback',
-    error: message
+    sourceMode: "fallback",
+    error: message,
   };
 }
 
-export default function Home() {
+function useDebouncedValue<T>(value: T, delay = 220) {
+  const [debounced, setDebounced] = useState(value);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(value), delay);
+    return () => window.clearTimeout(timer);
+  }, [value, delay]);
+
+  return debounced;
+}
+
+export default function HomePage() {
+  const [feedMode, setFeedMode] = useState<FeedMode>("home");
+  const [country, setCountry] = useState<CountryFilter>("all");
   const [threshold, setThreshold] = useState(82);
-  const [watchThemes, setWatchThemes] = useState(defaultThemes);
-  const [watchStocks, setWatchStocks] = useState(defaultStocks);
-  const [themeKeyword, setThemeKeyword] = useState('');
-  const [themeSuggestOpen, setThemeSuggestOpen] = useState(false);
-  const [stockKeyword, setStockKeyword] = useState('');
-  const [stockSuggestOpen, setStockSuggestOpen] = useState(false);
-  const [stockCatalog, setStockCatalog] = useState<StockCandidate[]>([]);
-  const [remoteStockSuggestions, setRemoteStockSuggestions] = useState<StockCandidate[]>([]);
-  const [stockSuggestLoading, setStockSuggestLoading] = useState(false);
-  const [stockSourceLabel, setStockSourceLabel] = useState('실시간 종목 마스터 연결 중');
+  const [aiStockThreshold, setAiStockThreshold] = useState(60);
+  const [watchThemes, setWatchThemes] = useState<string[]>(defaultThemes);
+  const [watchStocks, setWatchStocks] = useState<string[]>(defaultStocks);
   const [news, setNews] = useState<MarketNews[]>([]);
-  const [feedMode, setFeedMode] = useState<FeedMode>('all');
-  const [isNearBottom, setIsNearBottom] = useState(false);
-  const [countryMenuOpen, setCountryMenuOpen] = useState(false);
-  const [compactMode, setCompactMode] = useState(false);
-  const [pinnedNewsIds, setPinnedNewsIds] = useState<string[]>([]);
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-  const [loading, setLoading] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const [sourceMode, setSourceMode] = useState<'live' | 'fallback'>('fallback');
-  const [generatedAt, setGeneratedAt] = useState<string>('');
-  const [lastUpdatedLabel, setLastUpdatedLabel] = useState<string>('');
-  const [error, setError] = useState<string>('');
-  const [newCount, setNewCount] = useState(0);
-  const [newIds, setNewIds] = useState<string[]>([]);
-    const [debugText, setDebugText] = useState('기본 뉴스 표시 후 최신 뉴스 확인 중');
-  const [introVisible, setIntroVisible] = useState(true);
-  const [loadingStep, setLoadingStep] = useState(0);
+  const [generatedAt, setGeneratedAt] = useState("");
+  const [sourceMode, setSourceMode] = useState<"live" | "fallback">("fallback");
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
-  const previousIdsRef = useRef<Set<string>>(new Set());
-  const introStartedAtRef = useRef(0);
-  const inFlightControllerRef = useRef<AbortController | null>(null);
-  const mountedRef = useRef(false);
-  const lastContentModeRef = useRef<Exclude<FeedMode, 'settings'>>('all');
-  const countryMenuRef = useRef<HTMLDivElement | null>(null);
-  const themeSuggestRef = useRef<HTMLDivElement | null>(null);
-  const stockSuggestRef = useRef<HTMLDivElement | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [fullRefreshVisible, setFullRefreshVisible] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [compact, setCompact] = useState(false);
+  const [pinnedNewsIds, setPinnedNewsIds] = useState<string[]>([]);
+  const [stockCatalog, setStockCatalog] = useState<StockCandidate[]>([]);
+  const [stockQuotes, setStockQuotes] = useState<QuoteMap>({});
+  const [stockQuery, setStockQuery] = useState("");
+  const [themeQuery, setThemeQuery] = useState("");
+  const [stockSuggestions, setStockSuggestions] = useState<StockCandidate[]>(
+    [],
+  );
+  const debouncedStockQuery = useDebouncedValue(stockQuery, 220);
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
+  const [mobileDrawerClosing, setMobileDrawerClosing] = useState(false);
+  const [selectedNews, setSelectedNews] = useState<MarketNews | null>(null);
+  const [alertsOpen, setAlertsOpen] = useState(false);
+  const [dismissedAlertIds, setDismissedAlertIds] = useState<string[]>([]);
+  const [themeSuggestOpen, setThemeSuggestOpen] = useState(false);
+  const [stockSearchFocused, setStockSearchFocused] = useState(false);
+  const [themeSearchFocused, setThemeSearchFocused] = useState(false);
+  const [aiRefreshStamp, setAiRefreshStamp] = useState(0);
+  const [aiDescriptionOpen, setAiDescriptionOpen] = useState(false);
+  const stockInputRef = useRef<HTMLInputElement | null>(null);
+  const themeInputRef = useRef<HTMLInputElement | null>(null);
+  const summaryGridRef = useRef<HTMLElement | null>(null);
+  const watchCardRowRef = useRef<HTMLDivElement | null>(null);
+  const [mobileHeaderHidden, setMobileHeaderHidden] = useState(false);
+  const [appTheme, setAppTheme] = useState<AppTheme>("light");
+  const [quickMenuVisible, setQuickMenuVisible] = useState(true);
+  const [interestChipsExpanded, setInterestChipsExpanded] = useState(false);
+  const [refreshMessage, setRefreshMessage] =
+    useState("뉴스를 새로고침하고 있습니다.");
+  const [pullDistance, setPullDistance] = useState(0);
+  const [pullRefreshing, setPullRefreshing] = useState(false);
 
-  const expandedStockKeywords = useMemo(() => expandStockKeywords(watchStocks, stockCatalog), [watchStocks, stockCatalog]);
-  const watchlist = useMemo(() => uniqueValues([...watchThemes, ...expandedStockKeywords]), [watchThemes, expandedStockKeywords]);
-  const watchSet = useMemo(() => new Set(uniqueValues([...watchThemes, ...watchStocks, ...expandedStockKeywords])), [watchThemes, watchStocks, expandedStockKeywords]);
-  const stockFocusedRequestKey = useMemo(() => expandedStockKeywords.join('|'), [expandedStockKeywords]);
-  const stockSuggestions = useMemo(() => {
-    const keyword = stockKeyword.trim();
-    if (!keyword) return [];
+  const expandedStocks = useMemo(
+    () => expandStockKeywords(watchStocks, stockCatalog),
+    [watchStocks, stockCatalog],
+  );
+  const watchlist = useMemo(
+    () => unique([...watchThemes, ...expandedStocks]),
+    [watchThemes, expandedStocks],
+  );
+  const watchlistRef = useRef<string[]>(watchlist);
 
-    const source = remoteStockSuggestions.length > 0
-      ? remoteStockSuggestions
-      : findStockSuggestions(keyword, 10, stockCatalog);
+  useEffect(() => {
+    watchlistRef.current = watchlist;
+  }, [watchlist]);
 
-    const scoreNewsMentions = (stock: StockCandidate) => {
-      const tokens = getStockSearchTokens(stock.name, stockCatalog)
-        .concat(stock.aliases || [], stock.code)
-        .map((value) => value.trim())
-        .filter((value) => value.length >= 2);
-
-      if (tokens.length === 0 || news.length === 0) return 0;
-
-      const normalizedTokens = Array.from(new Set(tokens.map((value) => value.toLowerCase())));
-      let score = 0;
-
-      for (const item of news) {
-        const title = (item.title || '').toLowerCase();
-        const summary = (item.summary || '').toLowerCase();
-        const metadata = [
-          ...(item.relatedStocks || []),
-          ...(item.tags || [])
-        ].join(' ').toLowerCase();
-
-        for (const token of normalizedTokens) {
-          if (title.includes(token)) score += 12;
-          if (summary.includes(token)) score += 5;
-          if (metadata.includes(token)) score += 4;
-        }
-      }
-
-      return score;
+  function resolveWatchStock(name: string, index: number) {
+    const candidate = findStockSuggestions(name, 1, stockCatalog)[0];
+    const fallbackCode =
+      index === 0 ? "005930" : index === 1 ? "NVDA" : "010120";
+    return {
+      name,
+      code: candidate?.code || fallbackCode,
+      market: candidate?.market,
     };
+  }
 
-    const marketRank = (market: StockCandidate['market']) => {
-      if (market === 'KOSPI') return 3;
-      if (market === 'KOSDAQ') return 2;
-      if (market === 'NASDAQ' || market === 'NYSE') return 1;
-      return 0;
-    };
-
-    return source
-      .filter((stock) => matchesStockQuery(keyword, stock))
-      .map((stock, index) => ({
-        stock,
-        index,
-        popularity: scoreNewsMentions(stock),
-        marketRank: marketRank(stock.market)
-      }))
-      .sort((a, b) =>
-        b.popularity - a.popularity ||
-        b.marketRank - a.marketRank ||
-        a.index - b.index
-      )
-      .slice(0, 8)
-      .map((item) => item.stock);
-  }, [stockKeyword, stockCatalog, remoteStockSuggestions, news]);
-  const dynamicThemeSuggestions = useMemo(() => {
-    const keyword = themeKeyword.trim().toLowerCase();
-    const known = new Set(watchThemes.map((theme) => theme.toLowerCase()));
-    const score = new Map<string, number>();
-
-    const add = (raw: string, weight = 1) => {
-      const value = raw.replace(/^#/, '').trim();
-      if (!value || value.length < 2 || value.length > 18) return;
-      if (/^[0-9]+$/.test(value)) return;
-      if (known.has(value.toLowerCase())) return;
-      score.set(value, (score.get(value) || 0) + weight);
-    };
-
-    for (const item of news) {
-      item.tags?.forEach((tag) => add(tag, 9));
-      item.relatedStocks?.forEach((stock) => {
-        if (!watchStocks.includes(stock)) add(stock, 2);
-      });
-      const text = `${item.title || ''} ${item.summary || ''}`;
-      const tokens = text.match(/[가-힣A-Za-z0-9+]{2,18}/g) || [];
-      for (const token of tokens) {
-        if (/뉴스|기사|관련|시장|주식|투자|오늘|전망|종목|경제|한국|미국|기자|제공|사진/.test(token)) continue;
-        if (/AI|HBM|반도체|전력|원전|방산|조선|환율|금리|데이터센터|로봇|바이오|자동차|전기차|배터리|2차전지|CPI|FOMC/i.test(token)) add(token, 3);
-      }
-    }
-
-    return Array.from(score.entries())
-      .filter(([theme]) => !keyword || theme.toLowerCase().includes(keyword))
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ko'))
-      .slice(0, 8)
-      .map(([theme]) => theme);
-  }, [news, themeKeyword, watchThemes, watchStocks]);
-  const thresholdDisplay = Math.round(threshold);
-  const thresholdPercent = Math.max(0, Math.min(100, ((threshold - 50) / 45) * 100));
-
-  const persistSettings = useCallback((next: WatchState = { themes: watchThemes, stocks: watchStocks }, nextThreshold = threshold) => {
-    try {
-      localStorage.setItem(WATCHLIST_KEY, JSON.stringify(next));
-      localStorage.setItem(THRESHOLD_KEY, String(nextThreshold));
-    } catch {
-      // 브라우저 저장소가 막힌 환경에서도 화면 표시는 계속 진행합니다.
-    }
-  }, [threshold, watchStocks, watchThemes]);
-
-  const setWatchState = useCallback((next: WatchState) => {
-    const normalized = normalizeWatchState(next);
-    setWatchThemes(normalized.themes);
-    setWatchStocks(normalized.stocks);
-    persistSettings(normalized, threshold);
-  }, [persistSettings, threshold]);
-
-  const applyResponse = useCallback((data: NewsApiResponse, shouldResetVisible = true) => {
-    const sorted = sortNews(safeArray(data.news));
-    const beforeIds = previousIdsRef.current;
-
-    if (beforeIds.size > 0) {
-      const incomingNewIds = sorted.filter((item) => !beforeIds.has(item.id)).map((item) => item.id);
-      setNewCount(incomingNewIds.length);
-      setNewIds(incomingNewIds);
-    }
-    previousIdsRef.current = new Set(sorted.map((item) => item.id));
-
-    setNews(sorted);
-    setSourceMode(data.sourceMode || 'fallback');
-    setGeneratedAt(data.generatedAt || new Date().toISOString());
-    setError(data.error || '');
-    setLatencyMs(typeof data.latencyMs === 'number' ? data.latencyMs : null);
-    setDebugText(`${data.cacheHit ? 'cache' : data.sourceMode || 'unknown'} · ${sorted.length}건 수신 · ${new Date().toLocaleTimeString('ko-KR')}`);
-    if (!data.cacheHit) window.setTimeout(() => setNewIds([]), 5200);
-    if (shouldResetVisible) setVisibleCount(PAGE_SIZE);
-
-    try {
-      localStorage.setItem(CACHE_KEY, JSON.stringify({ ...data, news: sorted }));
-    } catch {
-      // 캐시 저장 실패는 치명적이지 않습니다.
-    }
-  }, []);
-
-  const loadNews = useCallback(async (silent = false, stockFocused = false) => {
-    inFlightControllerRef.current?.abort();
-
-    if (silent) {
-      setRefreshing(true);
-    } else {
-      setLoading(true);
-      setIntroVisible(true);
-      introStartedAtRef.current = Date.now();
-    }
-    setError('');
-
-    const controller = new AbortController();
-    inFlightControllerRef.current = controller;
-    const timeout = window.setTimeout(() => controller.abort(), CLIENT_TIMEOUT_MS);
-
-    try {
-      const focusedWatchlist = uniqueValues(stockFocused ? expandedStockKeywords : watchlist);
-      const params = new URLSearchParams({ limit: stockFocused ? '90' : '70', watchlist: focusedWatchlist.join(',') });
-      if (stockFocused) params.set('mode', 'mystocks');
-      const requestUrl = `/api/news?${params.toString()}`;
-      setDebugText(stockFocused ? '내 관심 종목 관련 뉴스 재검색 중' : '최신 뉴스 요청 중');
-
-      const response = await fetch(requestUrl, { cache: 'no-store', signal: controller.signal });
-      if (!response.ok) throw new Error(`뉴스 API HTTP 오류: ${response.status}`);
-
-      const data = await response.json() as NewsApiResponse;
-      if (inFlightControllerRef.current !== controller) return;
-      const receivedNews = safeArray(data.news);
-      if (receivedNews.length === 0 && !stockFocused) throw new Error('API 응답은 왔지만 news 배열이 비어 있습니다.');
-
-      applyResponse(data);
-    } catch (err) {
-      if (inFlightControllerRef.current !== controller && err instanceof Error && err.name === 'AbortError') return;
-
-      const message = err instanceof Error && err.name === 'AbortError'
-        ? '뉴스 API 응답 시간이 길어 대체 데이터를 표시했습니다.'
-        : err instanceof Error ? err.message : '뉴스를 불러오지 못했습니다.';
-      setError(message);
-      setDebugText(`오류: ${message}`);
-
-      if (previousIdsRef.current.size === 0) {
-        applyResponse(fallbackResponse(message));
-      }
-    } finally {
-      window.clearTimeout(timeout);
-      if (inFlightControllerRef.current === controller) {
-        inFlightControllerRef.current = null;
-      }
-      if (!mountedRef.current) return;
-      setLoading(false);
-      setRefreshing(false);
-      const elapsed = Date.now() - introStartedAtRef.current;
-      window.setTimeout(() => {
-        if (mountedRef.current) setIntroVisible(false);
-      }, Math.max(0, INTRO_MIN_MS - elapsed));
-    }
-  }, [applyResponse, expandedStockKeywords, watchlist]);
+  const watchStockItems = useMemo(
+    () =>
+      watchStocks
+        .slice(0, 3)
+        .map((name, index) => resolveWatchStock(name, index)),
+    [watchStocks, stockCatalog],
+  );
 
   useEffect(() => {
-    const stepTimer = window.setInterval(() => {
-      setLoadingStep((step) => (step + 1) % loadingMessages.length);
-    }, 560);
-    const hardLimit = window.setTimeout(() => setIntroVisible(false), INTRO_MAX_MS);
-    return () => {
-      window.clearInterval(stepTimer);
-      window.clearTimeout(hardLimit);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (news.length > 0) {
-      const elapsed = Date.now() - introStartedAtRef.current;
-      const wait = Math.max(0, INTRO_MIN_MS - elapsed);
-      const timer = window.setTimeout(() => setIntroVisible(false), wait);
-      return () => window.clearTimeout(timer);
-    }
-  }, [news.length]);
-
-  useEffect(() => {
-    if (!generatedAt) {
-      setLastUpdatedLabel('');
-      return;
-    }
-
-    try {
-      setLastUpdatedLabel(new Date(generatedAt).toLocaleString('ko-KR'));
-    } catch {
-      setLastUpdatedLabel('');
-    }
-  }, [generatedAt]);
-
-  useEffect(() => {
-    try {
-      const cachedWatchlist = localStorage.getItem(WATCHLIST_KEY);
-      const oldCachedWatchlist = localStorage.getItem('market-signal:watchlist:v1.6') || localStorage.getItem('market-signal:watchlist:v1.5');
-      const cachedThreshold = localStorage.getItem(THRESHOLD_KEY) || localStorage.getItem('market-signal:threshold:v1.6') || localStorage.getItem('market-signal:threshold:v1.5');
-      const cachedNews = localStorage.getItem(CACHE_KEY);
-      const cachedPinned = localStorage.getItem(PINNED_KEY);
-
-      const watchPayload = cachedWatchlist || oldCachedWatchlist;
-      if (watchPayload) {
-        const parsedWatchlist = JSON.parse(watchPayload);
-        const normalized = normalizeWatchState(parsedWatchlist);
-        setWatchThemes(normalized.themes);
-        setWatchStocks(normalized.stocks);
-      }
-      if (cachedThreshold && !Number.isNaN(Number(cachedThreshold))) setThreshold(Number(cachedThreshold));
-      if (cachedNews) {
-        const parsed = JSON.parse(cachedNews) as NewsApiResponse;
-        applyResponse(parsed, false);
-        setLoading(false);
-      }
-      if (cachedPinned) {
-        const parsedPinned = JSON.parse(cachedPinned);
-        if (Array.isArray(parsedPinned)) setPinnedNewsIds(parsedPinned.filter((id) => typeof id === 'string'));
-      }
-    } catch {
-      localStorage.removeItem(CACHE_KEY);
-      localStorage.removeItem(WATCHLIST_KEY);
-      localStorage.removeItem(THRESHOLD_KEY);
-      localStorage.removeItem(PINNED_KEY);
-    }
-  }, [applyResponse]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadStockMaster() {
-      try {
-        const cached = localStorage.getItem(STOCKS_CACHE_KEY);
-        if (cached) {
-          const parsed = JSON.parse(cached) as { stocks?: StockCandidate[]; generatedAt?: string; sourceMode?: string };
-          const generated = parsed.generatedAt ? new Date(parsed.generatedAt).getTime() : 0;
-          if (Array.isArray(parsed.stocks) && parsed.stocks.length > 0 && Date.now() - generated < 1000 * 60 * 60 * 24) {
-            setStockCatalog(parsed.stocks);
-            setStockSourceLabel(parsed.sourceMode === 'kis-master' ? `실시간 종목 ${parsed.stocks.length.toLocaleString('ko-KR')}개` : '종목 마스터 연결 불가');
-            return;
-          }
-        }
-      } catch {
-        localStorage.removeItem(STOCKS_CACHE_KEY);
-      }
-
-      try {
-        const response = await fetch('/api/stocks', { cache: 'no-store' });
-        if (!response.ok) throw new Error(`종목 API HTTP 오류: ${response.status}`);
-        const data = await response.json() as { stocks?: StockCandidate[]; sourceMode?: string; generatedAt?: string; error?: string };
-        if (cancelled) return;
-        if (Array.isArray(data.stocks) && data.stocks.length > 0) {
-          setStockCatalog(data.stocks);
-          setStockSourceLabel(data.sourceMode === 'kis-master' ? `실시간 종목 ${data.stocks.length.toLocaleString('ko-KR')}개` : '종목 마스터 연결 불가');
-          localStorage.setItem(STOCKS_CACHE_KEY, JSON.stringify({ ...data, generatedAt: data.generatedAt || new Date().toISOString() }));
-        }
-      } catch {
-        if (!cancelled) {
-          setStockCatalog([]);
-          setStockSourceLabel('종목 마스터 연결 불가');
-        }
-      }
-    }
-
-    loadStockMaster();
-    return () => { cancelled = true; };
-  }, []);
-
-
-  useEffect(() => {
-    const keyword = stockKeyword.trim();
-    if (!keyword) {
-      setRemoteStockSuggestions([]);
-      setStockSuggestLoading(false);
+    const codes = unique(
+      watchStockItems.map((item) => item.code).filter(Boolean),
+    );
+    if (codes.length === 0) {
+      setStockQuotes({});
       return;
     }
 
     const controller = new AbortController();
-    const timer = window.setTimeout(async () => {
-      try {
-        setStockSuggestLoading(true);
-        const response = await fetch(`/api/stocks?q=${encodeURIComponent(keyword)}&limit=12`, {
-          cache: 'no-store',
-          signal: controller.signal
-        });
-        if (!response.ok) throw new Error(`종목 자동완성 HTTP 오류: ${response.status}`);
-        const data = await response.json() as { stocks?: StockCandidate[] };
-        if (!controller.signal.aborted) {
-          setRemoteStockSuggestions(Array.isArray(data.stocks) ? data.stocks : []);
-        }
-      } catch {
-        if (!controller.signal.aborted) setRemoteStockSuggestions([]);
-      } finally {
-        if (!controller.signal.aborted) setStockSuggestLoading(false);
-      }
-    }, 120);
+    let active = true;
 
+    async function loadQuotes() {
+      try {
+        const response = await fetch(
+          `/api/quotes?codes=${encodeURIComponent(codes.join(","))}`,
+          {
+            cache: "no-store",
+            signal: controller.signal,
+          },
+        );
+        if (!response.ok) throw new Error("quote api failed");
+        const data = (await response.json()) as { quotes?: QuoteMap };
+        if (active) setStockQuotes(data.quotes || {});
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        if (active) setStockQuotes({});
+      }
+    }
+
+    void loadQuotes();
+    const timer = window.setInterval(loadQuotes, 1000 * 60);
     return () => {
-      window.clearTimeout(timer);
+      active = false;
       controller.abort();
-    };
-  }, [stockKeyword]);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    const isStockFeed = feedMode === 'mystocks';
-    loadNews(true, isStockFeed);
-
-    const timer = window.setInterval(() => loadNews(true, feedMode === 'mystocks'), 1000 * 60 * 2);
-    const onFocus = () => loadNews(true, feedMode === 'mystocks');
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') loadNews(true, feedMode === 'mystocks');
-    };
-
-    document.addEventListener('visibilitychange', onVisibilityChange);
-    window.addEventListener('focus', onFocus);
-
-    return () => {
-      mountedRef.current = false;
-      inFlightControllerRef.current?.abort();
-      inFlightControllerRef.current = null;
       window.clearInterval(timer);
-      window.removeEventListener('focus', onFocus);
-      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [feedMode, loadNews]);
-
+  }, [watchStockItems]);
 
   useEffect(() => {
-    const updateBottomState = () => {
-      const doc = document.documentElement;
-      const distanceFromBottom = doc.scrollHeight - (window.scrollY + window.innerHeight);
-      setIsNearBottom(distanceFromBottom < 180);
-    };
-    updateBottomState();
-    window.addEventListener('scroll', updateBottomState, { passive: true });
-    window.addEventListener('resize', updateBottomState);
-    return () => {
-      window.removeEventListener('scroll', updateBottomState);
-      window.removeEventListener('resize', updateBottomState);
-    };
-  }, []);
+    const scrollTargets = [
+      summaryGridRef.current,
+      watchCardRowRef.current,
+    ].filter((target): target is HTMLElement => Boolean(target));
 
-  useEffect(() => {
-    const onPointerDown = (event: PointerEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (!target?.closest('.country-dropdown')) setCountryMenuOpen(false);
-      if (!target?.closest('.stock-autocomplete')) setStockSuggestOpen(false);
-      if (!target?.closest('.theme-autocomplete')) setThemeSuggestOpen(false);
-    };
-    document.addEventListener('pointerdown', onPointerDown);
-    return () => document.removeEventListener('pointerdown', onPointerDown);
-  }, []);
+    const cleanups = scrollTargets.map((target) => {
+      let isDown = false;
+      let isDragging = false;
+      let startX = 0;
+      let startLeft = 0;
 
-  const sortedNews = useMemo(() => sortNews(news), [news]);
-  const isMyStockNews = useCallback((item: MarketNews) => {
-    if (watchStocks.length === 0) return false;
-    const haystack = [
-      item.title,
-      item.summary,
-      item.source,
-      ...(item.relatedStocks || []),
-      ...(item.tags || [])
-    ].join(' ').toLowerCase();
+      const handlePointerDown = (event: PointerEvent) => {
+        if (event.pointerType !== "mouse" || event.button !== 0) return;
+        if (target.scrollWidth <= target.clientWidth) return;
 
-    return expandedStockKeywords.some((stock) => {
-      const normalized = stock.trim().toLowerCase();
-      return normalized.length > 0 && haystack.includes(normalized);
+        isDown = true;
+        isDragging = false;
+        startX = event.clientX;
+        startLeft = target.scrollLeft;
+        target.classList.add("is-drag-ready");
+        target.setPointerCapture?.(event.pointerId);
+      };
+
+      const handlePointerMove = (event: PointerEvent) => {
+        if (!isDown || event.pointerType !== "mouse") return;
+
+        const deltaX = event.clientX - startX;
+        if (Math.abs(deltaX) > 4) {
+          isDragging = true;
+          target.classList.add("is-dragging");
+        }
+        if (!isDragging) return;
+
+        event.preventDefault();
+        target.scrollLeft = startLeft - deltaX;
+      };
+
+      const stopDrag = (event: PointerEvent) => {
+        if (!isDown) return;
+        isDown = false;
+        target.classList.remove("is-drag-ready", "is-dragging");
+        target.releasePointerCapture?.(event.pointerId);
+
+        if (isDragging) {
+          target.dataset.dragging = "true";
+          window.setTimeout(() => {
+            delete target.dataset.dragging;
+          }, 0);
+        }
+      };
+
+      const preventClickAfterDrag = (event: MouseEvent) => {
+        if (target.dataset.dragging === "true") {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      };
+
+      target.addEventListener("pointerdown", handlePointerDown);
+      target.addEventListener("pointermove", handlePointerMove);
+      target.addEventListener("pointerup", stopDrag);
+      target.addEventListener("pointercancel", stopDrag);
+      target.addEventListener("click", preventClickAfterDrag, true);
+
+      return () => {
+        target.removeEventListener("pointerdown", handlePointerDown);
+        target.removeEventListener("pointermove", handlePointerMove);
+        target.removeEventListener("pointerup", stopDrag);
+        target.removeEventListener("pointercancel", stopDrag);
+        target.removeEventListener("click", preventClickAfterDrag, true);
+      };
     });
-  }, [expandedStockKeywords, watchStocks.length]);
 
-  const filteredNews = useMemo(() => {
-    if (feedMode === 'mystocks') return sortedNews;
-    if (feedMode === 'korea') return sortedNews.filter((item) => item.marketRegion === 'korea');
-    if (feedMode === 'us') return sortedNews.filter((item) => item.marketRegion === 'us');
-    if (feedMode === 'global') return sortedNews.filter((item) => item.marketRegion === 'global' || item.marketRegion === 'unknown');
-    if (feedMode === 'trusted') return sortedNews.filter((item) => item.contentType === 'official_news' || item.contentType === 'market_report' || item.contentType === 'press_release');
-    if (feedMode === 'hot') return sortedNews.filter((item) => (item.finalScore ?? item.importanceScore) >= threshold);
-    if (feedMode === 'opinion') return sortedNews.filter((item) => item.contentType === 'blog_opinion' || item.contentType === 'community_post');
-    return sortedNews;
-  }, [feedMode, isMyStockNews, sortedNews, threshold]);
-  const visibleNews = filteredNews.slice(0, visibleCount);
-  const alertNews = sortedNews.filter((item) => (item.finalScore ?? item.importanceScore) >= threshold);
-  const myStocksCount = feedMode === 'mystocks' ? sortedNews.length : sortedNews.filter(isMyStockNews).length;
-  const pinnedHotNews = pinnedNewsIds
+    return () => {
+      cleanups.forEach((cleanup) => cleanup());
+    };
+  }, [feedMode, watchStocks.length]);
+  const watchSet = useMemo(
+    () => new Set(unique([...watchThemes, ...watchStocks, ...expandedStocks])),
+    [watchThemes, watchStocks, expandedStocks],
+  );
+  const sortedNews = useMemo(() => sortNews(news), [news]);
+  const topScore =
+    sortedNews[0]?.finalScore ?? sortedNews[0]?.importanceScore ?? 0;
+  const importantNews = sortedNews.filter(
+    (item) => (item.finalScore ?? item.importanceScore) >= threshold,
+  );
+  const alertNews = useMemo(() => {
+    if (dismissedAlertIds.length === 0) return importantNews;
+    const dismissed = new Set(dismissedAlertIds);
+    return importantNews.filter((item) => !dismissed.has(item.id));
+  }, [dismissedAlertIds, importantNews]);
+
+  const clearAllAlerts = () => {
+    setDismissedAlertIds((prev) =>
+      unique([...prev, ...importantNews.map((item) => item.id)]),
+    );
+  };
+  const koreaCount = sortedNews.filter(
+    (item) => item.marketRegion === "korea",
+  ).length;
+  const usCount = sortedNews.filter(
+    (item) => item.marketRegion === "us",
+  ).length;
+  const globalCount = sortedNews.filter(
+    (item) => item.marketRegion === "global" || item.marketRegion === "unknown",
+  ).length;
+  const pinnedNews = pinnedNewsIds
     .map((id) => sortedNews.find((item) => item.id === id))
     .filter((item): item is MarketNews => Boolean(item));
-  const koreaCount = sortedNews.filter((item) => item.marketRegion === 'korea').length;
-  const usCount = sortedNews.filter((item) => item.marketRegion === 'us').length;
-  const globalCount = sortedNews.filter((item) => item.marketRegion === 'global' || item.marketRegion === 'unknown').length;
-  const trustedCount = sortedNews.filter((item) => item.contentType === 'official_news' || item.contentType === 'market_report' || item.contentType === 'press_release').length;
-  const opinionCount = sortedNews.filter((item) => item.contentType === 'blog_opinion' || item.contentType === 'community_post').length;
-  const topScore = sortedNews[0]?.finalScore || sortedNews[0]?.importanceScore || 0;
+
+  const myStockNews = useMemo(() => {
+    if (watchStocks.length === 0) return [];
+    const tokens = unique([...watchStocks, ...expandedStocks]).map((value) =>
+      value.toLowerCase(),
+    );
+    const matched = sortedNews.filter((item) => {
+      const text = [
+        item.title,
+        item.summary,
+        item.source,
+        ...(item.tags || []),
+        ...(item.relatedStocks || []),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return tokens.some((token) => token.length > 0 && text.includes(token));
+    });
+
+    if (matched.length > 0) return matched;
+
+    // API 결과가 아직 관심 종목명과 직접 매칭되지 않을 때도 빈 화면만 보이지 않도록,
+    // 관심 테마와 높은 점수 뉴스를 보조 후보로 보여줍니다.
+    const themeTokens = watchThemes.map((value) => value.toLowerCase());
+    return sortedNews
+      .filter((item) => {
+        const text = [item.title, item.summary, ...(item.tags || [])]
+          .join(" ")
+          .toLowerCase();
+        return themeTokens.some((token) => token && text.includes(token));
+      })
+      .slice(0, 10);
+  }, [expandedStocks, sortedNews, watchStocks, watchThemes]);
+
+  const dynamicThemes = useMemo(() => {
+    const score = new Map<string, number>();
+    const known = new Set(watchThemes.map((theme) => theme.toLowerCase()));
+    for (const item of sortedNews) {
+      for (const tag of item.tags || []) {
+        const key = tag.trim();
+        if (key && !known.has(key.toLowerCase()))
+          score.set(key, (score.get(key) || 0) + 8);
+      }
+    }
+    const query = themeQuery.trim().toLowerCase();
+    return Array.from(score.entries())
+      .filter(([theme]) => !query || theme.toLowerCase().includes(query))
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "ko"))
+      .slice(0, 8)
+      .map(([theme]) => theme);
+  }, [sortedNews, themeQuery, watchThemes]);
+
+  const filteredNews = useMemo(() => {
+    let source = feedMode === "stocks" ? myStockNews : sortedNews;
+    if (feedMode === "scanner") source = importantNews;
+    if (feedMode === "alerts") source = alertNews;
+    if (country !== "all") {
+      source = source.filter((item) => {
+        if (country === "global")
+          return (
+            item.marketRegion === "global" || item.marketRegion === "unknown"
+          );
+        return item.marketRegion === country;
+      });
+    }
+    return source;
+  }, [country, feedMode, alertNews, importantNews, myStockNews, sortedNews]);
+
+  const visibleNews = filteredNews.slice(0, visibleCount);
   const hasMore = visibleCount < filteredNews.length;
-  const countryLabel = feedMode === 'korea' ? '🇰🇷 한국' : feedMode === 'us' ? '🇺🇸 미국' : feedMode === 'global' ? '🌍 글로벌' : '국가';
 
-  function addTheme(valueFromSuggestion?: string) {
-    const value = (valueFromSuggestion || themeKeyword).trim();
-    if (!value || watchThemes.includes(value)) {
-      setThemeKeyword('');
-      setThemeSuggestOpen(false);
-      return;
-    }
-    const next = { themes: [...watchThemes, value], stocks: watchStocks };
-    setWatchState(next);
-    setThemeKeyword('');
-    setThemeSuggestOpen(false);
-  }
+  const summaryCards = [
+    {
+      label: "종합점수 TOP",
+      value: topScore || "-",
+      sub: scoreLabel(topScore),
+      icon: <ChartNoAxesCombined size={18} />,
+      action: () => openMode("home"),
+    },
+    {
+      label: "오늘의 핵심 뉴스",
+      value: `${importantNews.length}건`,
+      sub: `전체 ${sortedNews.length}건`,
+      icon: <Sparkles size={18} />,
+      action: () => openMode("home"),
+    },
+    {
+      label: "관심 종목",
+      value: `${watchStocks.length}개`,
+      sub: `관련 ${myStockNews.length}건`,
+      icon: <BriefcaseBusiness size={18} />,
+      action: () => openMode("stocks"),
+    },
+    {
+      label: "알림 중요도",
+      value: `${Math.round(threshold)}%`,
+      sub: scoreLabel(threshold),
+      icon: <Bell size={18} />,
+      action: () => openMode("settings"),
+    },
+  ];
 
-  function addStock() {
-    const value = stockKeyword.trim();
-    if (!value) return;
-    const exact = findStockSuggestions(value, 1, stockCatalog)[0];
-    const selected = exact ? exact.name : value;
-    if (watchStocks.includes(selected)) {
-      setStockKeyword('');
-      setStockSuggestOpen(false);
-      return;
-    }
-    const next = { themes: watchThemes, stocks: [...watchStocks, selected] };
-    setWatchState(next);
-    if (feedMode === 'mystocks') setDebugText('관심 종목을 추가했습니다. 관련 뉴스를 재검색합니다.');
-    setStockKeyword('');
-    setStockSuggestOpen(false);
-  }
-
-  function removeTheme(item: string) {
-    setWatchState({ themes: watchThemes.filter((value) => value !== item), stocks: watchStocks });
-  }
-
-  function removeStock(item: string) {
-    setWatchState({ themes: watchThemes, stocks: watchStocks.filter((value) => value !== item) });
-  }
-
-  function selectStockSuggestion(stockName: string) {
-    if (!watchStocks.includes(stockName)) {
-      setWatchState({ themes: watchThemes, stocks: [...watchStocks, stockName] });
-      if (feedMode !== 'mystocks') changeFeed('mystocks');
-      setDebugText('관심 종목을 추가했습니다. 관련 뉴스를 재검색합니다.');
-    }
-    setStockKeyword('');
-    setStockSuggestOpen(false);
-  }
-
-  function resetWatchlist() {
-    setWatchState({ themes: defaultThemes, stocks: defaultStocks });
-  }
-
-  function clearWatchlist() {
-    setWatchState({ themes: [], stocks: [] });
-  }
-
-  function clearNewsCache() {
-    try {
-      localStorage.removeItem(CACHE_KEY);
-    } catch {
-      // 저장소 접근이 제한된 환경에서는 무시합니다.
-    }
-    setDebugText('뉴스 캐시를 삭제했습니다.');
-  }
-
-  function toggleTheme(tag: string) {
-    if (watchThemes.includes(tag)) {
-      removeTheme(tag);
-    } else {
-      setWatchState({ themes: [...watchThemes, tag], stocks: watchStocks });
-    }
-  }
-
-  function toggleStock(stock: string) {
-    const canonical = findStockSuggestions(stock, 1, stockCatalog)[0]?.name || stock;
-    if (watchStocks.includes(canonical)) {
-      removeStock(canonical);
-    } else {
-      setWatchState({ themes: watchThemes, stocks: [...watchStocks, canonical] });
-    }
-  }
-
-  function changeThreshold(value: number) {
-    const normalized = Math.max(50, Math.min(95, Number(value.toFixed(1))));
-    setThreshold(normalized);
-    persistSettings({ themes: watchThemes, stocks: watchStocks }, normalized);
-  }
-
-  function changeFeed(mode: FeedMode, options: { preserveScroll?: boolean } = {}) {
-    if (mode !== 'settings') {
-      lastContentModeRef.current = mode;
-    }
-    setFeedMode(mode);
-    setCountryMenuOpen(false);
-    setVisibleCount(PAGE_SIZE);
-    if (!options.preserveScroll) {
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-    }
-  }
-
-  function toggleSettings() {
-    if (feedMode === 'settings') {
-      changeFeed(lastContentModeRef.current);
-      return;
-    }
-    lastContentModeRef.current = feedMode as Exclude<FeedMode, 'settings'>;
-    changeFeed('settings');
-  }
-
-  function toggleMyStocksFeed() {
-    if (feedMode === 'mystocks') {
-      changeFeed('all');
-      return;
-    }
-    changeFeed('mystocks');
-    setDebugText('내 관심 종목 관련 뉴스를 재검색합니다.');
-    window.setTimeout(() => loadNews(true, true), 0);
-  }
-
-  function togglePinnedNews(item: MarketNews) {
-    setPinnedNewsIds((prev) => {
-      const exists = prev.includes(item.id);
-      const next = exists ? prev.filter((id) => id !== item.id) : [item.id, ...prev].slice(0, 8);
-      try {
-        localStorage.setItem(PINNED_KEY, JSON.stringify(next));
-      } catch {
-        // 저장소 제한 환경에서는 화면 상태만 유지합니다.
-      }
-      return next;
-    });
-  }
-
-  function removePinnedNews(id: string) {
-    setPinnedNewsIds((prev) => {
-      const next = prev.filter((itemId) => itemId !== id);
-      try {
-        localStorage.setItem(PINNED_KEY, JSON.stringify(next));
-      } catch {
-        // 저장소 제한 환경에서는 화면 상태만 유지합니다.
-      }
-      return next;
-    });
-  }
-
-  function QuickRegionMenu({ placement = 'side' }: { placement?: 'side' | 'bottom' }) {
-    const compactLabel = compactMode ? '자세히' : '간략히';
-    return (
-      <nav className={`quick-region-menu ${placement} redesigned`} aria-label={placement === 'bottom' ? '모바일 빠른 뉴스 필터' : '빠른 뉴스 필터'}>
-        <button className={feedMode === 'all' ? 'active' : ''} onClick={() => changeFeed('all')} aria-label="전체 뉴스">
-          <HomeIcon size={17} /><span>전체</span>
-        </button>
-
-        <div className="country-dropdown" ref={placement === 'side' ? countryMenuRef : undefined}>
-          <button
-            type="button"
-            className={(feedMode === 'korea' || feedMode === 'us' || feedMode === 'global' || countryMenuOpen) ? 'active country-trigger' : 'country-trigger'}
-            onClick={() => setCountryMenuOpen((open) => !open)}
-            aria-expanded={countryMenuOpen}
-            aria-label="국가별 뉴스 선택"
-          >
-            <span>{countryLabel}</span><ChevronDown size={15} />
-          </button>
-          {countryMenuOpen && (
-            <div className="country-popover" role="menu">
-              <button type="button" onClick={() => changeFeed('korea')} className={feedMode === 'korea' ? 'selected' : ''}>🇰🇷 한국경제</button>
-              <button type="button" onClick={() => changeFeed('us')} className={feedMode === 'us' ? 'selected' : ''}>🇺🇸 미국경제</button>
-              <button type="button" onClick={() => changeFeed('global')} className={feedMode === 'global' ? 'selected' : ''}>🌍 글로벌</button>
-            </div>
-          )}
-        </div>
-
-        <button className={feedMode === 'mystocks' ? 'active my-stocks-active' : 'my-stocks-button'} onClick={toggleMyStocksFeed} aria-label="내 주식 뉴스">
-          <BriefcaseBusiness size={17} /><span>내주식</span>
-        </button>
-        <button className={compactMode ? 'active compact-toggle' : 'compact-toggle'} onClick={() => setCompactMode((value) => !value)} aria-label="간략히 또는 자세히 보기">
-          <Sparkles size={16} /><span>{compactLabel}</span>
-        </button>
-        <button className={feedMode === 'settings' ? 'active' : ''} onClick={toggleSettings} aria-label="설정">
-          <Settings2 size={17} /><span>{feedMode === 'settings' ? '닫기' : '설정'}</span>
-        </button>
-      </nav>
+  function resolveStockCandidate(raw: string) {
+    const cleaned = raw.replace(/[()]/g, " ").replace(/\s+/g, " ").trim();
+    const codeMatch = raw.match(/\b\d{6}\b/);
+    const code = codeMatch?.[0];
+    return stockCatalog.find(
+      (stock) =>
+        (code && stock.code === code) ||
+        stock.name === raw ||
+        stock.name === cleaned ||
+        stock.aliases?.some((alias) => alias === raw || alias === cleaned),
     );
   }
 
-  function ThresholdSlider({ label, helper, className = '' }: { label: string; helper: string; className?: string }) {
-    const rangeShellRef = useRef<HTMLDivElement | null>(null);
+  function inferStocksFromNewsText(item: MarketNews) {
+    const text = [
+      item.title,
+      item.summary,
+      ...(item.tags || []),
+      ...(item.relatedStocks || []),
+    ]
+      .join(" ")
+      .toLowerCase();
+    const themeMap: Record<string, string[]> = {
+      ai: [
+        "삼성전자",
+        "SK하이닉스",
+        "네이버",
+        "카카오",
+        "한미반도체",
+        "테크윙",
+      ],
+      hbm: ["SK하이닉스", "삼성전자", "한미반도체", "테크윙", "원익IPS"],
+      반도체: [
+        "삼성전자",
+        "SK하이닉스",
+        "한미반도체",
+        "테크윙",
+        "원익IPS",
+        "리노공업",
+      ],
+      전력: ["LS ELECTRIC", "HD현대일렉트릭", "효성중공업", "대한전선"],
+      전선: ["LS", "LS ELECTRIC", "대한전선", "가온전선"],
+      환율: ["KB금융", "하나금융지주", "신한지주", "삼성전자"],
+      금리: ["KB금융", "하나금융지주", "신한지주", "우리금융지주"],
+      조선: ["HD한국조선해양", "삼성중공업", "한화오션"],
+      원전: ["두산에너빌리티", "현대건설", "LS ELECTRIC"],
+      방산: ["한화에어로스페이스", "LIG넥스원", "현대로템"],
+    };
+    const inferred = new Set<string>();
+    for (const [keyword, names] of Object.entries(themeMap)) {
+      if (text.includes(keyword.toLowerCase()))
+        names.forEach((name) => inferred.add(name));
+    }
+    for (const candidate of stockCatalog.slice(0, 1800)) {
+      const name = candidate.name.trim();
+      if (name && name.length >= 2 && text.includes(name.toLowerCase()))
+        inferred.add(name);
+    }
+    return Array.from(inferred).slice(0, 8);
+  }
 
-    const handleInput = (event: FormEvent<HTMLInputElement> | ChangeEvent<HTMLInputElement>) => {
-      changeThreshold(Number(event.currentTarget.value));
+  const aiStockRecommendations = useMemo(() => {
+    const score = new Map<
+      string,
+      {
+        name: string;
+        code?: string;
+        score: number;
+        reasons: string[];
+        news?: MarketNews;
+      }
+    >();
+    const bump = (
+      raw: string,
+      value: number,
+      reason: string,
+      newsItem?: MarketNews,
+    ) => {
+      const candidate = resolveStockCandidate(raw);
+      const name = candidate?.name || raw.replace(/\(\d{6}\)/g, "").trim();
+      if (!name || /^[0-9]{6}$/.test(name)) return;
+      const key = candidate?.code || name.toLowerCase();
+      const prev = score.get(key) || {
+        name,
+        code: candidate?.code,
+        score: 0,
+        reasons: [],
+        news: newsItem,
+      };
+      const reasons = prev.reasons.includes(reason)
+        ? prev.reasons
+        : [...prev.reasons, reason].slice(0, 2);
+      score.set(key, {
+        name: prev.name,
+        code: prev.code || candidate?.code,
+        score: Math.min(100, prev.score + value),
+        reasons,
+        news: prev.news || newsItem,
+      });
     };
 
-    const valueFromClientX = useCallback((clientX: number, rect: DOMRect) => {
-      const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-      return 50 + ratio * 45;
-    }, []);
+    for (const item of sortedNews.slice(0, 60)) {
+      const newsScore = item.finalScore ?? item.importanceScore;
+      const base = Math.max(8, Math.round(newsScore / 9));
+      for (const stock of item.relatedStocks || []) {
+        bump(
+          stock,
+          base + 12,
+          `${item.marketRegionLabel || "시장"} ${newsScore}점 뉴스와 연결`,
+          item,
+        );
+      }
+      for (const stock of inferStocksFromNewsText(item)) {
+        bump(stock, base + 7, "관련 뉴스 기반 후보", item);
+      }
+    }
 
-    const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-      const shell = rangeShellRef.current;
-      if (!shell) return;
+    if (score.size === 0) {
+      const fallbackNames =
+        unique([...watchStocks, ...watchThemes]).length > 0
+          ? [
+              "삼성전자",
+              "SK하이닉스",
+              "한미반도체",
+              "테크윙",
+              "LS ELECTRIC",
+              "두산에너빌리티",
+            ]
+          : ["삼성전자", "SK하이닉스", "한미반도체", "테크윙", "LS ELECTRIC"];
+      fallbackNames.forEach((name, index) =>
+        bump(
+          name,
+          Math.max(45, 74 - index * 4),
+          "수집 뉴스와 기본 시장 테마 기반 후보",
+          sortedNews[index],
+        ),
+      );
+    }
 
-      event.preventDefault();
-      const rect = shell.getBoundingClientRect();
-      changeThreshold(valueFromClientX(event.clientX, rect));
+    const allCandidates = Array.from(score.values())
+      .filter((item) => !watchStocks.includes(item.name))
+      .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name, "ko"));
 
-      const handlePointerMove = (moveEvent: PointerEvent) => {
-        moveEvent.preventDefault();
-        changeThreshold(valueFromClientX(moveEvent.clientX, rect));
-      };
+    const passed = allCandidates
+      .filter((item) => item.score >= aiStockThreshold)
+      .slice(0, 5);
+    return passed.length > 0 ? passed : allCandidates.slice(0, 5);
+  }, [aiRefreshStamp, sortedNews, stockCatalog, watchStocks, aiStockThreshold]);
 
-      const stopDragging = () => {
-        window.removeEventListener('pointermove', handlePointerMove);
-        window.removeEventListener('pointerup', stopDragging);
-        window.removeEventListener('pointercancel', stopDragging);
-      };
+  function changeAiStockThreshold(value: number) {
+    const normalized = Math.max(40, Math.min(95, value));
+    setAiStockThreshold(normalized);
+    try {
+      localStorage.setItem(AI_STOCK_THRESHOLD_KEY, String(normalized));
+    } catch {}
+  }
 
-      window.addEventListener('pointermove', handlePointerMove, { passive: false });
-      window.addEventListener('pointerup', stopDragging, { once: true });
-      window.addEventListener('pointercancel', stopDragging, { once: true });
+  function changeAiStockThresholdByPointer(
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
+    const next = Math.round(40 + (x / rect.width) * 55);
+    changeAiStockThreshold(next);
+  }
+
+  function addAiStockOnly(name: string) {
+    const candidate = findStockSuggestions(name, 1, stockCatalog)[0];
+    const selected = candidate?.name || name;
+    if (!watchStocks.includes(selected)) {
+      setWatchState({
+        themes: watchThemes,
+        stocks: [...watchStocks, selected],
+      });
+    }
+  }
+
+  function addAiStockAndReveal(item: { name: string; news?: MarketNews }) {
+    addAiStockOnly(item.name);
+    if (item.news) revealNewsOnHome(item.news);
+    else openMode("stocks");
+  }
+
+  function refreshAiRecommendations() {
+    setAiRefreshStamp(Date.now());
+    void loadNews(true, false, watchlistRef.current);
+  }
+
+  const persistWatch = useCallback(
+    (next: WatchState, nextThreshold = threshold) => {
+      try {
+        localStorage.setItem(WATCHLIST_KEY, JSON.stringify(next));
+        localStorage.setItem(THRESHOLD_KEY, String(nextThreshold));
+      } catch {
+        // ignore
+      }
+    },
+    [threshold],
+  );
+
+  const setWatchState = useCallback(
+    (next: WatchState) => {
+      const normalized = normalizeWatchState(next);
+      setWatchThemes(normalized.themes);
+      setWatchStocks(normalized.stocks);
+      persistWatch(normalized);
+    },
+    [persistWatch],
+  );
+
+  const applyResponse = useCallback((data: NewsApiResponse) => {
+    const next = sortNews(safeNews(data.news));
+    setNews(next.length > 0 ? next : mockNews);
+    setGeneratedAt(data.generatedAt || new Date().toISOString());
+    setSourceMode(data.sourceMode || "fallback");
+    setLatencyMs(typeof data.latencyMs === "number" ? data.latencyMs : null);
+    setError(data.error || "");
+    setVisibleCount(PAGE_SIZE);
+    try {
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ ...data, news: next }));
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const requestSeqRef = useRef(0);
+  const inFlightRef = useRef<AbortController | null>(null);
+  const activeNewsRequestKeyRef = useRef("");
+  const lastNewsRequestRef = useRef<{ key: string; at: number }>({
+    key: "",
+    at: 0,
+  });
+
+  const loadNews = useCallback(
+    async (
+      fullScreen = false,
+      stockFocused = false,
+      watchlistOverride?: string[],
+    ) => {
+      const activeWatchlist = unique(watchlistOverride || watchlistRef.current);
+      const params = new URLSearchParams({
+        limit: stockFocused ? "90" : "70",
+        watchlist: activeWatchlist.join(","),
+      });
+      if (stockFocused) params.set("mode", "mystocks");
+      const requestKey = params.toString();
+      const now = Date.now();
+
+      if (activeNewsRequestKeyRef.current === requestKey) return;
+      if (
+        !fullScreen &&
+        lastNewsRequestRef.current.key === requestKey &&
+        now - lastNewsRequestRef.current.at < 1500
+      )
+        return;
+
+      const requestId = requestSeqRef.current + 1;
+      requestSeqRef.current = requestId;
+
+      if (inFlightRef.current) inFlightRef.current.abort();
+      const controller = new AbortController();
+      inFlightRef.current = controller;
+      activeNewsRequestKeyRef.current = requestKey;
+      lastNewsRequestRef.current = { key: requestKey, at: now };
+
+      if (fullScreen) {
+        setRefreshMessage(
+          stockFocused
+            ? "내 주식 피드를 동기화하고 있습니다."
+            : "실시간 데이터를 동기화하고 있습니다.",
+        );
+        setFullRefreshVisible(true);
+      }
+      setLoading(!fullScreen);
+      setRefreshing(true);
+      setError("");
+      try {
+        const response = await fetch(`/api/news?${requestKey}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (!response.ok)
+          throw new Error(`뉴스 API HTTP 오류: ${response.status}`);
+        const data = (await response.json()) as NewsApiResponse;
+        if (requestSeqRef.current === requestId) applyResponse(data);
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        const message =
+          err instanceof Error ? err.message : "뉴스를 불러오지 못했습니다.";
+        if (requestSeqRef.current === requestId) {
+          setError(message);
+          applyResponse(fallbackResponse(message));
+        }
+      } finally {
+        if (requestSeqRef.current === requestId) {
+          setLoading(false);
+          setRefreshing(false);
+          setTimeout(() => setFullRefreshVisible(false), 1000);
+        }
+        if (inFlightRef.current === controller) inFlightRef.current = null;
+        if (activeNewsRequestKeyRef.current === requestKey)
+          activeNewsRequestKeyRef.current = "";
+      }
+    },
+    [applyResponse],
+  );
+
+  useEffect(() => {
+    let initialWatchlist = watchlistRef.current;
+    try {
+      const cachedWatch = localStorage.getItem(WATCHLIST_KEY);
+      const cachedThreshold = localStorage.getItem(THRESHOLD_KEY);
+      const cachedAiThreshold = localStorage.getItem(AI_STOCK_THRESHOLD_KEY);
+      const cachedTheme = localStorage.getItem(APP_THEME_KEY);
+      const cachedQuickMenu = localStorage.getItem(QUICK_MENU_KEY);
+      const cachedNews = localStorage.getItem(CACHE_KEY);
+      const cachedPinned = localStorage.getItem(PINNED_KEY);
+      if (cachedWatch) {
+        const normalized = normalizeWatchState(JSON.parse(cachedWatch));
+        setWatchThemes(normalized.themes);
+        setWatchStocks(normalized.stocks);
+        initialWatchlist = unique([...normalized.themes, ...normalized.stocks]);
+        watchlistRef.current = initialWatchlist;
+      }
+      if (cachedThreshold && !Number.isNaN(Number(cachedThreshold)))
+        setThreshold(Number(cachedThreshold));
+      if (cachedAiThreshold && !Number.isNaN(Number(cachedAiThreshold)))
+        setAiStockThreshold(Number(cachedAiThreshold));
+      if (cachedTheme === "musinsa" || cachedTheme === "light")
+        setAppTheme(cachedTheme);
+      if (cachedQuickMenu === "hidden") setQuickMenuVisible(false);
+      if (cachedNews) applyResponse(JSON.parse(cachedNews) as NewsApiResponse);
+      if (cachedPinned) {
+        const parsed = JSON.parse(cachedPinned);
+        if (Array.isArray(parsed))
+          setPinnedNewsIds(parsed.filter((id) => typeof id === "string"));
+      }
+    } catch {
+      // ignore corrupted cache
+    }
+    void loadNews(false, false, initialWatchlist);
+    return () => {
+      if (inFlightRef.current) inFlightRef.current.abort();
     };
+    // 초기 부팅 시 1회만 실행합니다. 관심사 변경은 수동 새로고침/추가 액션에서만 호출합니다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    return (
-      <div className={`threshold-control ${className}`} style={{ '--range-progress': `${thresholdPercent}%` } as CSSProperties}>
-        <label className="range-label">
-          <span>{label}</span>
-          <strong>{thresholdDisplay}</strong>
-        </label>
-        <div
-          ref={rangeShellRef}
-          className="range-shell draggable-range-shell"
-          onPointerDown={handlePointerDown}
+  useEffect(() => {
+    let cancelled = false;
+    async function loadStocks() {
+      try {
+        const response = await fetch("/api/stocks", { cache: "no-store" });
+        if (!response.ok) return;
+        const data = (await response.json()) as { stocks?: StockCandidate[] };
+        if (!cancelled && Array.isArray(data.stocks))
+          setStockCatalog(data.stocks);
+      } catch {
+        // ignore
+      }
+    }
+    void loadStocks();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const query = debouncedStockQuery.trim();
+    if (!query) {
+      setStockSuggestions([]);
+      return;
+    }
+
+    const controller = new AbortController();
+    let active = true;
+
+    async function loadStockSuggestions() {
+      try {
+        const response = await fetch(
+          `/api/stocks?q=${encodeURIComponent(query)}&limit=8`,
+          { cache: "no-store", signal: controller.signal },
+        );
+        if (!response.ok) throw new Error("stock api failed");
+        const data = (await response.json()) as { stocks?: StockCandidate[] };
+        if (!active) return;
+        const remote = Array.isArray(data.stocks) ? data.stocks : [];
+        setStockSuggestions(
+          remote.length > 0
+            ? remote
+            : findStockSuggestions(query, 8, stockCatalog),
+        );
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        if (active)
+          setStockSuggestions(findStockSuggestions(query, 8, stockCatalog));
+      }
+    }
+
+    void loadStockSuggestions();
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [debouncedStockQuery, stockCatalog]);
+
+  useEffect(() => {
+    if (!stockSearchFocused || !stockQuery) return;
+    const active = document.activeElement;
+    if (active instanceof HTMLInputElement && active === stockInputRef.current)
+      return;
+    const timer = window.setTimeout(() => {
+      stockInputRef.current?.focus({ preventScroll: true });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [stockQuery, stockSearchFocused, stockSuggestions.length]);
+
+  useEffect(() => {
+    if (!themeSearchFocused || !themeQuery) return;
+    const active = document.activeElement;
+    if (active instanceof HTMLInputElement && active === themeInputRef.current)
+      return;
+    const timer = window.setTimeout(() => {
+      themeInputRef.current?.focus({ preventScroll: true });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [themeQuery, themeSearchFocused, dynamicThemes.length]);
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 860px)");
+    const syncCompact = () => {
+      if (media.matches) setCompact(false);
+    };
+    syncCompact();
+    media.addEventListener("change", syncCompact);
+    return () => media.removeEventListener("change", syncCompact);
+  }, []);
+  useEffect(() => {
+    document.documentElement.dataset.theme = appTheme;
+    try {
+      localStorage.setItem(APP_THEME_KEY, appTheme);
+    } catch {}
+  }, [appTheme]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        QUICK_MENU_KEY,
+        quickMenuVisible ? "visible" : "hidden",
+      );
+    } catch {}
+  }, [quickMenuVisible]);
+
+  useEffect(() => {
+    let startY = 0;
+    let tracking = false;
+
+    function handleTouchStart(event: TouchEvent) {
+      if (window.scrollY > 2 || fullRefreshVisible) return;
+      const target = event.target;
+      if (
+        target instanceof Element &&
+        target.closest(
+          "input, textarea, select, .suggestion-popover, .mobile-bottom-nav, .alerts-modal, .news-detail-sheet",
+        )
+      )
+        return;
+      startY = event.touches[0]?.clientY || 0;
+      tracking = true;
+    }
+
+    function handleTouchMove(event: TouchEvent) {
+      if (!tracking) return;
+      const y = event.touches[0]?.clientY || 0;
+      const distance = Math.max(0, Math.min(118, (y - startY) * 0.62));
+      if (distance > 6) {
+        event.preventDefault();
+        setPullDistance(distance);
+      }
+    }
+
+    function handleTouchEnd() {
+      if (!tracking) return;
+      tracking = false;
+      const shouldRefresh = pullDistance >= 86;
+      if (shouldRefresh) {
+        setPullRefreshing(true);
+        void loadNews(
+          true,
+          feedMode === "stocks",
+          watchlistRef.current,
+        ).finally(() => {
+          window.setTimeout(() => {
+            setPullRefreshing(false);
+            setPullDistance(0);
+          }, 500);
+        });
+      } else {
+        setPullDistance(0);
+      }
+    }
+
+    window.addEventListener("touchstart", handleTouchStart, { passive: true });
+    window.addEventListener("touchmove", handleTouchMove, { passive: false });
+    window.addEventListener("touchend", handleTouchEnd);
+    window.addEventListener("touchcancel", handleTouchEnd);
+    return () => {
+      window.removeEventListener("touchstart", handleTouchStart);
+      window.removeEventListener("touchmove", handleTouchMove);
+      window.removeEventListener("touchend", handleTouchEnd);
+      window.removeEventListener("touchcancel", handleTouchEnd);
+    };
+  }, [feedMode, fullRefreshVisible, loadNews, pullDistance]);
+
+  useEffect(() => {
+    let lastY = window.scrollY;
+    let ticking = false;
+
+    function handleScroll() {
+      if (ticking) return;
+      ticking = true;
+      window.requestAnimationFrame(() => {
+        const currentY = window.scrollY;
+        const delta = currentY - lastY;
+        if (currentY < 80) setMobileHeaderHidden(false);
+        else if (delta > 8) setMobileHeaderHidden(true);
+        else if (delta < -6) setMobileHeaderHidden(false);
+        lastY = currentY;
+        ticking = false;
+      });
+    }
+
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
+
+  useEffect(() => {
+    let dragging = false;
+    let startY = 0;
+    let startScrollY = 0;
+
+    function isInteractive(target: EventTarget | null) {
+      return (
+        target instanceof Element &&
+        Boolean(
+          target.closest(
+            "button, a, input, textarea, select, [role='button'], .suggestion-popover, .mobile-bottom-nav, .mobile-topbar",
+          ),
+        )
+      );
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      if (event.pointerType === "touch" || isInteractive(event.target)) return;
+      dragging = true;
+      startY = event.clientY;
+      startScrollY = window.scrollY;
+      document.documentElement.classList.add("drag-scroll-active");
+    }
+
+    function handlePointerMove(event: PointerEvent) {
+      if (!dragging) return;
+      const distance = startY - event.clientY;
+      window.scrollTo({ top: startScrollY + distance });
+    }
+
+    function stopDragging() {
+      dragging = false;
+      document.documentElement.classList.remove("drag-scroll-active");
+    }
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", stopDragging);
+    window.addEventListener("pointercancel", stopDragging);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", stopDragging);
+      window.removeEventListener("pointercancel", stopDragging);
+      document.documentElement.classList.remove("drag-scroll-active");
+    };
+  }, []);
+
+  function changeThreshold(value: number) {
+    const normalized = Math.max(50, Math.min(95, value));
+    setThreshold(normalized);
+    persistWatch({ themes: watchThemes, stocks: watchStocks }, normalized);
+  }
+
+  function addStock(name?: string) {
+    const raw = (name || stockQuery).trim();
+    if (!raw) return;
+    const candidate = findStockSuggestions(raw, 1, stockCatalog)[0];
+    const selected = candidate?.name || raw;
+    const nextStocks = watchStocks.includes(selected)
+      ? watchStocks
+      : [...watchStocks, selected];
+    const nextState = { themes: watchThemes, stocks: nextStocks };
+    setWatchState(nextState);
+    const nextExpanded = expandStockKeywords(nextStocks, stockCatalog);
+    const nextWatchlist = unique([...watchThemes, ...nextExpanded]);
+    watchlistRef.current = nextWatchlist;
+    setStockQuery("");
+    setFeedMode("stocks");
+    void loadNews(true, true, nextWatchlist);
+  }
+
+  function addTheme(theme?: string) {
+    const selected = (theme || themeQuery).replace(/^#/, "").trim();
+    if (!selected) return;
+    if (!watchThemes.includes(selected))
+      setWatchState({
+        themes: [...watchThemes, selected],
+        stocks: watchStocks,
+      });
+    setThemeQuery("");
+    setThemeSuggestOpen(false);
+    setThemeSearchFocused(false);
+  }
+
+  function removeStock(name: string) {
+    setWatchState({
+      themes: watchThemes,
+      stocks: watchStocks.filter((item) => item !== name),
+    });
+  }
+
+  function removeTheme(theme: string) {
+    setWatchState({
+      themes: watchThemes.filter((item) => item !== theme),
+      stocks: watchStocks,
+    });
+  }
+
+  function toggleTheme(theme: string) {
+    if (watchThemes.includes(theme)) removeTheme(theme);
+    else
+      setWatchState({ themes: [...watchThemes, theme], stocks: watchStocks });
+  }
+
+  function toggleStock(stock: string) {
+    const canonical =
+      findStockSuggestions(stock, 1, stockCatalog)[0]?.name || stock;
+    if (watchStocks.includes(canonical)) removeStock(canonical);
+    else
+      setWatchState({
+        themes: watchThemes,
+        stocks: [...watchStocks, canonical],
+      });
+  }
+
+  function togglePinned(item: MarketNews) {
+    setPinnedNewsIds((prev) => {
+      const next = prev.includes(item.id)
+        ? prev.filter((id) => id !== item.id)
+        : [item.id, ...prev].slice(0, 8);
+      try {
+        localStorage.setItem(PINNED_KEY, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }
+
+  function resetLocalSettings() {
+    try {
+      localStorage.removeItem(WATCHLIST_KEY);
+      localStorage.removeItem(THRESHOLD_KEY);
+      localStorage.removeItem(AI_STOCK_THRESHOLD_KEY);
+      localStorage.removeItem(PINNED_KEY);
+      localStorage.removeItem(QUICK_MENU_KEY);
+    } catch {
+      // ignore
+    }
+    setWatchThemes(defaultThemes);
+    setWatchStocks(defaultStocks);
+    setThreshold(82);
+    setAiStockThreshold(60);
+    setPinnedNewsIds([]);
+    setQuickMenuVisible(true);
+    setThemeQuery("");
+    setStockQuery("");
+    setThemeSuggestOpen(false);
+    setInterestChipsExpanded(false);
+    watchlistRef.current = defaultThemes;
+    void loadNews(true, false, defaultThemes);
+  }
+
+  function closeMobileDrawer() {
+    if (!mobileSearchOpen) return;
+    setMobileDrawerClosing(true);
+    window.setTimeout(() => {
+      setMobileSearchOpen(false);
+      setMobileDrawerClosing(false);
+    }, 580);
+  }
+
+  function openMode(mode: FeedMode) {
+    closeMobileDrawer();
+    setFeedMode(mode);
+    setVisibleCount(PAGE_SIZE);
+    if (mode === "stocks" && watchStocks.length > 0) {
+      window.setTimeout(() => loadNews(false, true, watchlistRef.current), 0);
+    }
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function revealNewsOnHome(item: MarketNews) {
+    setAlertsOpen(false);
+    setSelectedNews(null);
+    setCountry("all");
+    setFeedMode("home");
+    const sortedIndex = sortedNews.findIndex(
+      (newsItem) => newsItem.id === item.id,
+    );
+    if (sortedIndex >= 0) setVisibleCount(Math.max(PAGE_SIZE, sortedIndex + 1));
+    window.setTimeout(() => {
+      const target = document.getElementById(`news-card-${item.id}`);
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.classList.add("news-card-highlight");
+        window.setTimeout(
+          () => target.classList.remove("news-card-highlight"),
+          1800,
+        );
+      } else {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+    }, 180);
+  }
+
+  function navItems() {
+    return [
+      { mode: "home" as const, label: "홈", icon: <Home size={19} /> },
+      {
+        mode: "stocks" as const,
+        label: "내 주식",
+        icon: <BriefcaseBusiness size={19} />,
+      },
+      {
+        mode: "aiStocks" as const,
+        label: "AI 추천",
+        icon: <Sparkles size={19} />,
+      },
+      { mode: "alerts" as const, label: "알림", icon: <Bell size={19} /> },
+      {
+        mode: "settings" as const,
+        label: "설정",
+        icon: <Settings size={19} />,
+      },
+    ];
+  }
+
+  const renderStockSearchBox = (compactBox = false) => (
+    <div
+      className={compactBox ? "stock-search-box compact" : "stock-search-box"}
+    >
+      <Search size={18} />
+      <input
+        ref={stockInputRef}
+        value={stockQuery}
+        onFocus={() => setStockSearchFocused(true)}
+        onBlur={() =>
+          window.setTimeout(() => setStockSearchFocused(false), 220)
+        }
+        onChange={(event) => {
+          const nextQuery = event.target.value;
+          setStockQuery(nextQuery);
+          const query = nextQuery.trim();
+          setStockSuggestions(
+            query ? findStockSuggestions(query, 8, stockCatalog) : [],
+          );
+          setStockSearchFocused(true);
+        }}
+        onCompositionStart={() => setStockSearchFocused(true)}
+        onCompositionEnd={() => {
+          setStockSearchFocused(true);
+          window.requestAnimationFrame(() =>
+            stockInputRef.current?.focus({ preventScroll: true }),
+          );
+        }}
+        onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing) return;
+          if (event.key === "Enter") addStock(stockSuggestions[0]?.name);
+        }}
+        autoComplete="off"
+        spellCheck={false}
+        placeholder="종목명 또는 티커 입력"
+      />
+      {stockQuery && (
+        <button
+          type="button"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => {
+            setStockQuery("");
+            stockInputRef.current?.focus({ preventScroll: true });
+          }}
+          aria-label="검색어 지우기"
         >
-          <input
-            className="smooth-range"
-            type="range"
-            min="50"
-            max="95"
-            step="0.1"
-            value={threshold}
-            onInput={handleInput}
-            onChange={handleInput}
-            aria-label={label}
-            tabIndex={-1}
-          />
+          <X size={16} />
+        </button>
+      )}
+      <button
+        type="button"
+        className="add-round"
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => addStock(stockSuggestions[0]?.name)}
+        aria-label="관심 종목 추가"
+      >
+        <Plus size={18} />
+      </button>
+      {stockQuery && stockSearchFocused && (
+        <div className="suggestion-popover">
+          {stockSuggestions.length > 0 ? (
+            stockSuggestions.map((stock) => (
+              <button
+                type="button"
+                key={`${stock.code}-${stock.name}`}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => addStock(stock.name)}
+              >
+                <span>
+                  <strong>{stock.name}</strong>
+                  <em>
+                    {stock.code} · {stock.market}
+                  </em>
+                </span>
+                <small>{stock.sector}</small>
+              </button>
+            ))
+          ) : (
+            <div className="suggestion-empty">
+              일치하는 종목을 찾는 중입니다.
+            </div>
+          )}
         </div>
-        <div className="range-scale" aria-hidden="true">
+      )}
+    </div>
+  );
+
+  function ThemeSearchBox() {
+    const shouldShowThemes = themeSuggestOpen && dynamicThemes.length > 0;
+    return (
+      <div className="stock-search-box">
+        <Sparkles size={18} />
+        <input
+          ref={themeInputRef}
+          value={themeQuery}
+          onFocus={() => {
+            setThemeSuggestOpen(true);
+            setThemeSearchFocused(true);
+          }}
+          onBlur={() =>
+            window.setTimeout(() => {
+              setThemeSuggestOpen(false);
+              setThemeSearchFocused(false);
+            }, 220)
+          }
+          onChange={(event) => {
+            setThemeQuery(event.target.value);
+            setThemeSuggestOpen(true);
+            setThemeSearchFocused(true);
+          }}
+          onCompositionEnd={() => {
+            setThemeSearchFocused(true);
+            window.requestAnimationFrame(() =>
+              themeInputRef.current?.focus({ preventScroll: true }),
+            );
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") addTheme(dynamicThemes[0] || themeQuery);
+          }}
+          placeholder="관심 테마 입력"
+        />
+        <button
+          type="button"
+          className="add-round"
+          onClick={() => addTheme(dynamicThemes[0] || themeQuery)}
+        >
+          <Plus size={18} />
+        </button>
+        {shouldShowThemes && (
+          <div className="suggestion-popover compact-scroll">
+            {dynamicThemes.slice(0, 5).map((theme) => (
+              <button
+                type="button"
+                key={theme}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => addTheme(theme)}
+              >
+                <span>
+                  <strong>#{theme}</strong>
+                  <em>뉴스에서 감지됨</em>
+                </span>
+                <small>테마</small>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function ThresholdSlider({ dense = false }: { dense?: boolean }) {
+    const percent = Math.max(0, Math.min(100, ((threshold - 50) / 45) * 100));
+    const handle = (
+      event: ChangeEvent<HTMLInputElement> | FormEvent<HTMLInputElement>,
+    ) => changeThreshold(Number(event.currentTarget.value));
+    return (
+      <div
+        className={dense ? "threshold-card dense" : "threshold-card"}
+        style={{ "--range": `${percent}%` } as CSSProperties}
+      >
+        <div className="threshold-head">
+          <span>알림 중요도</span>
+          <strong>{Math.round(threshold)}%</strong>
+        </div>
+        <input
+          type="range"
+          min="50"
+          max="95"
+          step="1"
+          value={threshold}
+          onInput={handle}
+          onChange={handle}
+        />
+        <div className="threshold-scale">
           <span>50</span>
           <span>65</span>
           <span>80</span>
           <span>95</span>
         </div>
-        <p className="hint">{helper}</p>
+        {!dense && (
+          <p>
+            종합점수는 중요도, 신뢰도, 최신성을 더하고 의견성은 감점해
+            계산합니다.
+          </p>
+        )}
       </div>
     );
   }
 
-  function SettingsPanel({ compact = false }: { compact?: boolean }) {
+  function StatusCard() {
     return (
-      <div className={compact ? 'settings-page compact' : 'settings-page'}>
-        <div className="settings-hero">
-          <span>PERSONAL SIGNAL</span>
-          <h2>설정</h2>
-          <p>관심 종목·테마, 알림 기준 점수, 캐시 관리를 한 곳에서 조정합니다. 변경 내용은 브라우저 localStorage에 즉시 저장됩니다.</p>
-          <button type="button" className="settings-close-btn" onClick={toggleSettings}><X size={16} /> 설정 닫기</button>
+      <div className="status-card">
+        <div className="status-title">
+          <i className={sourceMode === "live" ? "live" : "fallback"} /> 실제
+          뉴스 연동 중
         </div>
-
-        <div className="settings-grid">
-          <section className="settings-card">
-            <div className="settings-title"><Sparkles size={17} /> 관심 테마</div>
-            <div className="theme-autocomplete" ref={themeSuggestRef}>
-              <div className="keyword-box theme-keyword-box">
-                <input
-                  value={themeKeyword}
-                  onChange={(event) => {
-                    setThemeKeyword(event.target.value);
-                    setThemeSuggestOpen(true);
-                  }}
-                  onFocus={() => setThemeSuggestOpen(true)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault();
-                      addTheme(dynamicThemeSuggestions[0]);
-                    }
-                    if (event.key === 'Escape') setThemeSuggestOpen(false);
-                  }}
-                  placeholder="테마 검색 (예: AI, HBM, 원전)"
-                  autoComplete="off"
-                />
-                <button type="button" onClick={() => addTheme(dynamicThemeSuggestions[0])} aria-label="관심 테마 추가"><Plus size={17} /></button>
-              </div>
-              {themeSuggestOpen && (themeKeyword.trim() || dynamicThemeSuggestions.length > 0) && (
-                <div className="stock-suggest-panel theme-suggest-panel" role="listbox" aria-label="관심 테마 자동완성">
-                  {dynamicThemeSuggestions.length > 0 ? dynamicThemeSuggestions.map((theme) => (
-                    <button key={theme} type="button" className="stock-suggest-item theme-suggest-item" onClick={() => addTheme(theme)}>
-                      <span className="stock-suggest-main">
-                        <strong>#{theme}</strong>
-                        <em>뉴스에서 자주 감지된 테마</em>
-                      </span>
-                      <span className="stock-suggest-sub">테마</span>
-                    </button>
-                  )) : (
-                    <div className="stock-suggest-empty">
-                      일치하는 추천 테마가 없습니다. Enter 또는 + 버튼을 누르면 입력어 그대로 추가됩니다.
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-            <div className="managed-chip-list">
-              {watchThemes.length === 0 && <span className="empty-chip">등록된 관심 테마가 없습니다.</span>}
-              {watchThemes.map((item) => (
-                <span key={item} className="managed-chip theme-chip">
-                  {item}
-                  <button type="button" onClick={() => removeTheme(item)} aria-label={`${item} 테마 삭제`}><X size={14} /></button>
-                </span>
-              ))}
-            </div>
-          </section>
-
-          <section className="settings-card">
-            <div className="settings-title"><Search size={17} /> 관심 종목</div>
-            <div className="stock-autocomplete" ref={stockSuggestRef}>
-              <div className="keyword-box stock-keyword-box">
-                <input
-                  value={stockKeyword}
-                  onChange={(event) => {
-                    setStockKeyword(event.target.value);
-                    setStockSuggestOpen(true);
-                  }}
-                  onFocus={() => setStockSuggestOpen(true)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault();
-                      if (stockSuggestions.length > 0) selectStockSuggestion(stockSuggestions[0].name);
-                      else addStock();
-                    }
-                    if (event.key === 'Escape') setStockSuggestOpen(false);
-                  }}
-                  placeholder="예: LS, 삼성, NVDA"
-                  autoComplete="off"
-                />
-                <button type="button" onClick={addStock} aria-label="관심 종목 추가"><Plus size={17} /></button>
-              </div>
-              {stockSuggestOpen && stockKeyword.trim() && (
-                <div className="stock-suggest-panel" role="listbox" aria-label="관심 종목 자동완성">
-                  {stockSuggestLoading ? (
-                    <div className="stock-suggest-empty">실제 종목을 검색하는 중입니다...</div>
-                  ) : stockSuggestions.length > 0 ? stockSuggestions.map((stock) => (
-                    <button key={`${stock.code}-${stock.name}`} type="button" className="stock-suggest-item" onClick={() => selectStockSuggestion(stock.name)}>
-                      <span className="stock-suggest-main">
-                        <strong>{stock.name}</strong>
-                        <em>{stock.code} · {stock.market}</em>
-                      </span>
-                      <span className="stock-suggest-sub">{stock.sector}</span>
-                    </button>
-                  )) : (
-                    <div className="stock-suggest-empty">
-                      일치하는 실제 종목을 찾지 못했습니다. 종목명을 더 입력하거나 Enter/+ 버튼으로 입력어를 관심 키워드로 직접 추가할 수 있습니다.
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-            <div className="managed-chip-list">
-              {watchStocks.length === 0 && <span className="empty-chip">등록된 관심 종목이 없습니다.</span>}
-              {watchStocks.map((item) => (
-                <span key={item} className="managed-chip stock-chip" title={`매칭 키워드: ${getStockSearchTokens(item, stockCatalog).join(', ')}`}>
-                  {item}
-                  <button type="button" onClick={() => removeStock(item)} aria-label={`${item} 종목 삭제`}><X size={14} /></button>
-                </span>
-              ))}
-            </div>
-          </section>
+        <p>마지막 갱신 {formatTime(generatedAt)}</p>
+        <div className="status-pills">
+          <span>{sortedNews.length}건 수신</span>
+          <span>{latencyMs !== null ? `${latencyMs}ms` : "응답 대기"}</span>
         </div>
-
-        <section className="settings-card settings-wide-card">
-          <div className="settings-title"><Bell size={17} /> 알림 기준</div>
-          <ThresholdSlider
-            className="settings-range"
-            label="중요 뉴스 기준 점수"
-            helper="이 점수 이상인 뉴스는 알림대상 탭과 상단 고정 영역에 우선 표시됩니다. 드래그하면 부드럽게 연속 조정됩니다."
-          />
-        </section>
-
-        <div className="settings-actions">
-          <button type="button" className="danger-btn" onClick={resetWatchlist}><Trash2 size={16} /> 관심 설정 기본값으로 초기화</button>
-          <button type="button" className="danger-btn secondary" onClick={clearWatchlist}><X size={16} /> 관심 설정 모두 비우기</button>
-          <button type="button" className="ghost-btn" onClick={clearNewsCache}><Trash2 size={16} /> 뉴스 캐시 삭제</button>
-          <button type="button" className="ghost-btn" onClick={() => loadNews(false)} disabled={loading || refreshing}>
-            {refreshing || loading ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />} 현재 관심 기준으로 새로고침
-          </button>
-        </div>
+        {error && <small>{error}</small>}
       </div>
     );
   }
 
-  function MyStockFeedManager() {
-    const topSuggestions = stockKeyword.trim() ? stockSuggestions : [];
-
+  function DesktopSidebar() {
     return (
-      <section className="my-stock-manager" aria-label="내 주식 관심 종목 빠른 관리">
-        <div className="my-stock-manager-head">
-          <div>
-            <span>MY WATCHLIST</span>
-            <h3>관심 종목을 바로 추가해 보세요</h3>
-            <p>종목명을 정확히 몰라도 됩니다. “LS”, “삼성”, “NVDA”처럼 입력하면 후보를 추천하고, 선택 즉시 내 주식 피드에 반영됩니다. <b>{stockSourceLabel}</b></p>
-          </div>
-          <button type="button" className="manager-refresh" onClick={() => loadNews(false, true)} disabled={loading || refreshing}>
-            {loading || refreshing ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />} 새로고침
-          </button>
+      <aside className="desktop-sidebar">
+        <div className="side-brand">
+          <span className="brand-wave">S</span>
+          <strong>SKIM</strong>
         </div>
-
-        <div className="my-stock-input-row stock-autocomplete">
-          <div className="keyword-box stock-keyword-box my-stock-keyword-box">
-            <Search size={17} className="input-leading-icon" />
-            <input
-              value={stockKeyword}
-              onChange={(event) => {
-                setStockKeyword(event.target.value);
-                setStockSuggestOpen(true);
-              }}
-              onFocus={() => setStockSuggestOpen(true)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault();
-                  if (stockSuggestions.length > 0) selectStockSuggestion(stockSuggestions[0].name);
-                  else addStock();
-                }
-                if (event.key === 'Escape') setStockSuggestOpen(false);
-              }}
-              placeholder="종목 검색 (예: LS, 삼성전자)"
-              autoComplete="off"
-            />
-            {stockKeyword && (
-              <button type="button" className="input-clear-btn" onClick={() => { setStockKeyword(''); setStockSuggestOpen(false); }} aria-label="종목 검색어 지우기">
-                <X size={15} />
-              </button>
-            )}
-            <button type="button" onClick={addStock} aria-label="관심 종목 추가"><Plus size={17} /></button>
-          </div>
-
-          {stockSuggestOpen && stockKeyword.trim() && (
-            <div className="stock-suggest-panel my-stock-suggest-panel" role="listbox" aria-label="내 주식 종목 자동완성">
-              {stockSuggestLoading ? (
-                    <div className="stock-suggest-empty">실제 종목을 검색하는 중입니다...</div>
-                  ) : topSuggestions.length > 0 ? topSuggestions.map((stock) => (
-                <button key={`mystock-${stock.code}-${stock.name}`} type="button" className="stock-suggest-item" onClick={() => selectStockSuggestion(stock.name)}>
-                  <span className="stock-suggest-main">
-                    <strong>{stock.name}</strong>
-                    <em>{stock.code} · {stock.market}</em>
-                  </span>
-                  <span className="stock-suggest-sub">{stock.sector}</span>
-                </button>
-              )) : (
-                <div className="stock-suggest-empty">
-                  일치하는 실제 종목을 찾지 못했습니다. 종목명을 더 입력하거나 Enter/+ 버튼으로 입력어를 관심 키워드로 직접 추가할 수 있습니다.
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        <div className="my-stock-chip-row" aria-label="내 관심 종목 목록">
-          {watchStocks.length === 0 ? (
-            <span className="empty-chip">아직 관심 종목이 없습니다.</span>
-          ) : watchStocks.map((item) => (
-            <span key={`mystock-chip-${item}`} className="managed-chip stock-chip" title={`매칭 키워드: ${getStockSearchTokens(item, stockCatalog).join(', ')}`}>
-              {item}
-              <button type="button" onClick={() => removeStock(item)} aria-label={`${item} 종목 삭제`}><X size={14} /></button>
-            </span>
+        <nav>
+          {navItems().map((item) => (
+            <button
+              key={item.mode}
+              type="button"
+              className={feedMode === item.mode ? "active" : ""}
+              onClick={() => openMode(item.mode)}
+            >
+              {item.icon}
+              <span>{item.label}</span>
+            </button>
           ))}
-        </div>
+        </nav>
+        <StatusCard />
+      </aside>
+    );
+  }
 
-        <div className="my-stock-help-row">
-          <span>매칭 뉴스 {myStocksCount}건</span>
-          <button type="button" onClick={() => changeFeed('all')}>전체 피드 보기</button>
-          <button type="button" onClick={toggleSettings}>설정에서 자세히 관리</button>
+  function RightPanel() {
+    return (
+      <aside className="right-panel">
+        <div className="panel-top">
+          <h2>필터 설정</h2>
+          <button type="button" onClick={() => openMode("settings")}>
+            <X size={16} />
+          </button>
+        </div>
+        {ThresholdSlider({})}
+        <div className="interest-card dark">
+          <strong>테마 {watchThemes.length}</strong>
+          <span>{watchThemes.join(" · ") || "없음"}</span>
+        </div>
+        <div className="interest-card dark">
+          <strong>종목 {watchStocks.length}</strong>
+          <span>{watchStocks.join(" · ") || "없음"}</span>
+        </div>
+        <div className="interest-card dark">
+          <strong>키워드 {watchlist.length}</strong>
+          <span>{watchlist.slice(0, 5).join(" · ") || "없음"}</span>
+        </div>
+        {/* <button type="button" className="settings-link" onClick={() => openMode("settings")}><SlidersHorizontal size={17} /> 설정 관리</button> */}
+      </aside>
+    );
+  }
+
+  function SummaryGrid() {
+    return (
+      <section ref={summaryGridRef} className="summary-grid">
+        {summaryCards.map((card) => (
+          <button
+            type="button"
+            className="summary-card"
+            key={card.label}
+            onClick={card.action}
+          >
+            <span>{card.label}</span>
+            <strong>{card.value}</strong>
+            <small>
+              {card.icon}
+              {card.sub}
+            </small>
+          </button>
+        ))}
+      </section>
+    );
+  }
+
+  function WatchStockCards() {
+    return (
+      <section className="watch-section">
+        <div className="section-title-row">
+          <h2>관심 종목 요약</h2>
+          <button type="button" onClick={() => openMode("stocks")}>
+            전체 보기 <ChevronRight size={15} />
+          </button>
+        </div>
+        <div ref={watchCardRowRef} className="watch-card-row">
+          {watchStockItems.map((item) => {
+            const quote = stockQuotes[item.code];
+            return (
+              <div
+                className="stock-mini-card"
+                key={`${item.name}-${item.code}`}
+              >
+                <button
+                  type="button"
+                  className="mini-star"
+                  onClick={() => removeStock(item.name)}
+                  aria-label={`${item.name} 관심 종목 제거`}
+                >
+                  <Star size={14} fill="currentColor" />
+                </button>
+                <strong>{item.name}</strong>
+                <span>{item.code}</span>
+                <b>{quote?.priceText || "시세 확인 중"}</b>
+                <em
+                  className={
+                    quote?.changeRate !== null &&
+                    quote?.changeRate !== undefined &&
+                    quote.changeRate < 0
+                      ? "down"
+                      : ""
+                  }
+                >
+                  {quote?.changeText || "실시간 연동"}
+                </em>
+                <i />
+              </div>
+            );
+          })}
+          <button
+            type="button"
+            className="stock-add-card"
+            onClick={() => openMode("search")}
+          >
+            <Plus size={22} />
+            종목 추가
+          </button>
         </div>
       </section>
     );
   }
 
+  function NewsListSection({
+    title = "실시간 주요 뉴스",
+    items = visibleNews,
+  }: {
+    title?: string;
+    items?: MarketNews[];
+  }) {
+    const isHomeMain = feedMode === "home" && title === "실시간 주요 뉴스";
+    const sectionTotal =
+      title === "내 주식 관련 뉴스" ? myStockNews.length : filteredNews.length;
+    const sectionHasMore = visibleCount < sectionTotal;
+    return (
+      <section className="news-section">
+        <div className="section-title-row">
+          <h2>{title}</h2>
+          <div className="list-actions">
+            <button
+              type="button"
+              className={compact ? "active compact-toggle" : "compact-toggle"}
+              onClick={() => setCompact(!compact)}
+            >
+              {compact ? "자세히" : "간략히"}
+            </button>
+            {isHomeMain && (
+              <button
+                type="button"
+                className="desktop-refresh-action"
+                onClick={() => loadNews(true, false, watchlistRef.current)}
+              >
+                <RefreshCw size={15} /> 새로고침
+              </button>
+            )}
+          </div>
+        </div>
+        <div className="country-filter-row">
+          <button
+            className={country === "all" ? "active" : ""}
+            onClick={() => setCountry("all")}
+          >
+            전체
+          </button>
+          <button
+            className={country === "korea" ? "active" : ""}
+            onClick={() => setCountry("korea")}
+          >
+            한국
+          </button>
+          <button
+            className={country === "us" ? "active" : ""}
+            onClick={() => setCountry("us")}
+          >
+            미국
+          </button>
+          <button
+            className={country === "global" ? "active" : ""}
+            onClick={() => setCountry("global")}
+          >
+            글로벌
+          </button>
+        </div>
+        {loading && items.length === 0 ? (
+          <div className="skeleton-stack">
+            <div />
+            <div />
+            <div />
+          </div>
+        ) : items.length === 0 ? (
+          <div className="empty-card">표시할 뉴스가 없습니다.</div>
+        ) : (
+          <div className="commerce-news-list">
+            {items.map((item) => (
+              <NewsCard
+                key={item.id}
+                news={item}
+                threshold={threshold}
+                watchSet={watchSet}
+                compact={compact}
+                pinned={pinnedNewsIds.includes(item.id)}
+                onTogglePin={() => togglePinned(item)}
+                onToggleTheme={toggleTheme}
+                onToggleStock={toggleStock}
+                onOpenDetail={
+                  feedMode === "alerts"
+                    ? (target) => {
+                        window.open(
+                          target.originalUrl,
+                          "_blank",
+                          "noopener,noreferrer",
+                        );
+                      }
+                    : setSelectedNews
+                }
+              />
+            ))}
+          </div>
+        )}
+        {sectionHasMore && (
+          <button
+            type="button"
+            className="load-more-commerce"
+            onClick={() => setVisibleCount((count) => count + PAGE_SIZE)}
+          >
+            <Plus size={17} /> 뉴스 더 보기
+          </button>
+        )}
+      </section>
+    );
+  }
+
+  function HomeView() {
+    return (
+      <>
+        <div className="greeting-row">
+          <div>
+            <h1>안녕하세요! 👋</h1>
+            <p>시장을 움직이는 중요한 뉴스를 놓치지 마세요.</p>
+          </div>
+          <button
+            type="button"
+            className="bell-button"
+            onClick={() => setAlertsOpen(true)}
+          >
+            <Bell size={20} />
+            <span>{alertNews.length}</span>
+          </button>
+        </div>
+        {SummaryGrid()}
+        {NewsListSection({ items: visibleNews })}
+        {WatchStockCards()}
+      </>
+    );
+  }
+
+  function StocksView() {
+    return (
+      <div className="page-card light-page-card">
+        <div className="back-title">
+          <h1>관심 종목</h1>
+          <p>등록한 종목과 관련 뉴스를 한곳에서 확인합니다.</p>
+        </div>
+        {renderStockSearchBox()}
+        <div className="chip-board">
+          {watchStocks.length === 0 ? (
+            <span className="empty-chip">관심 종목이 없습니다.</span>
+          ) : (
+            watchStocks.map((stock) => (
+              <span className="managed-chip" key={stock}>
+                {stock}
+                <small>
+                  {getStockSearchTokens(stock, stockCatalog)
+                    .slice(0, 2)
+                    .join(" · ")}
+                </small>
+                <button onClick={() => removeStock(stock)}>
+                  <X size={13} />
+                </button>
+              </span>
+            ))
+          )}
+        </div>
+        {NewsListSection({
+          title: "내 주식 관련 뉴스",
+          items: myStockNews.slice(0, visibleCount),
+        })}
+      </div>
+    );
+  }
+
+  function SearchView() {
+    return (
+      <div className="mobile-page-stack">
+        <section className="search-hero">
+          <button
+            type="button"
+            className="back-btn"
+            onClick={() => openMode("home")}
+          >
+            <ChevronRight size={17} />
+          </button>
+          <h1>
+            관심 종목을
+            <br />
+            추가해 보세요
+          </h1>
+          <p>
+            종목명 또는 티커로 빠르게 검색하고 내 주식 피드에 바로 반영합니다.
+          </p>
+          {renderStockSearchBox()}
+          <div className="recommend-row">
+            {[
+              "삼성전자",
+              "엔비디아",
+              "LS",
+              "현대차",
+              "SK하이닉스",
+              "한국전력",
+            ].map((item) => (
+              <button type="button" key={item} onClick={() => addStock(item)}>
+                {item}
+              </button>
+            ))}
+          </div>
+          <div className="search-illustration">
+            <Search size={96} />
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  function ScannerView() {
+    return (
+      <div className="page-card">
+        <div className="back-title">
+          <h1>AI 스캐너</h1>
+          <p>종합점수 {Math.round(threshold)}점 이상 뉴스를 우선 표시합니다.</p>
+        </div>
+        {SummaryGrid()}
+        {NewsListSection({
+          title: "고중요도 뉴스",
+          items: importantNews.slice(0, visibleCount),
+        })}
+      </div>
+    );
+  }
+
+  function AiStockThresholdSlider() {
+    const percent = Math.max(
+      0,
+      Math.min(100, ((aiStockThreshold - 40) / 55) * 100),
+    );
+    return (
+      <div
+        className="threshold-card dense ai-threshold-card"
+        style={{ "--range": `${percent}%` } as CSSProperties}
+      >
+        <div className="threshold-head">
+          <span>AI 추천 점수</span>
+          <strong>{Math.round(aiStockThreshold)}점 이상</strong>
+        </div>
+        <div
+          className="ai-range-hitarea"
+          onPointerDown={(event) => {
+            event.currentTarget.setPointerCapture(event.pointerId);
+            changeAiStockThresholdByPointer(event);
+          }}
+          onPointerMove={(event) => {
+            if (event.buttons === 1) changeAiStockThresholdByPointer(event);
+          }}
+        >
+          <input
+            type="range"
+            min="40"
+            max="95"
+            step="1"
+            value={aiStockThreshold}
+            onInput={(event) =>
+              changeAiStockThreshold(Number(event.currentTarget.value))
+            }
+            onChange={(event) =>
+              changeAiStockThreshold(Number(event.currentTarget.value))
+            }
+          />
+        </div>
+        <div className="threshold-scale">
+          <span>40</span>
+          <span>60</span>
+          <span>80</span>
+          <span>95</span>
+        </div>
+      </div>
+    );
+  }
+
+  function AiStocksView() {
+    return (
+      <div className="page-card light-page-card ai-stock-page">
+        <div className="back-title ai-title-row">
+          <div>
+            <div className="ai-title-head">
+              <h1>AI 추천</h1>
+              <button
+                type="button"
+                className="ai-desc-toggle"
+                onClick={() => setAiDescriptionOpen((open) => !open)}
+              >
+                + 설명
+              </button>
+            </div>
+            <p
+              className={
+                aiDescriptionOpen ? "ai-description open" : "ai-description"
+              }
+            >
+              오늘 수집된 뉴스와 관심 키워드를 기준으로 주목할 만한 종목을
+              추렸습니다.
+            </p>
+            <small>
+              카드를 클릭하시면 관심종목에 추가되고 관련 뉴스로 이동합니다.
+            </small>
+          </div>
+          <button
+            type="button"
+            className="desktop-refresh-action ai-refresh-action press-motion"
+            onClick={refreshAiRecommendations}
+          >
+            <RefreshCw size={15} /> 실시간 추천 새로고침
+          </button>
+        </div>
+        <AiStockThresholdSlider />
+        {aiStockRecommendations.length === 0 ? (
+          <div className="empty-card">
+            추천 후보를 분석 중입니다. 뉴스 새로고침 후에도 비어 있으면 관심
+            테마를 추가해 주세요.
+          </div>
+        ) : (
+          <div className="ai-stock-list enhanced">
+            {aiStockRecommendations.map((item, index) => (
+              <button
+                type="button"
+                key={`${item.code || item.name}-${index}`}
+                onClick={() => addAiStockAndReveal(item)}
+              >
+                <div className="ai-rank-row">
+                  <span>TOP {index + 1}</span>
+                  <strong>{item.score}/100</strong>
+                </div>
+                <strong className="ai-stock-name-line">
+                  {item.name}
+                  {item.code ? <small>{item.code}</small> : null}
+                </strong>
+                <b>
+                  {item.news?.title
+                    ? item.news.title.slice(0, 58)
+                    : "관련 뉴스 기반 추천"}
+                </b>
+                <i
+                  role="button"
+                  tabIndex={0}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    addAiStockOnly(item.name);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.stopPropagation();
+                      addAiStockOnly(item.name);
+                    }
+                  }}
+                >
+                  + 추가
+                </i>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function SettingsView() {
+    const quickLabel = quickMenuVisible ? "빠른모음 안보기" : "빠른모음 보기";
+    const allInterests = [
+      ...watchThemes.map((value) => ({ type: "theme" as const, value })),
+      ...watchStocks.map((value) => ({ type: "stock" as const, value })),
+    ];
+    const chipLimit = 6;
+    const visibleInterests = interestChipsExpanded
+      ? allInterests
+      : allInterests.slice(0, chipLimit);
+    const hasHiddenInterests = allInterests.length > chipLimit;
+
+    return (
+      <div className="settings-screen">
+        <div className="settings-mobile-head">
+          <h1>설정</h1>
+          <span>v9.7</span>
+        </div>
+        <section className="settings-list-card">
+          <h2>일반</h2>
+          <button
+            type="button"
+            onClick={() => setQuickMenuVisible((visible) => !visible)}
+          >
+            <SlidersHorizontal size={17} />
+            {quickLabel}
+            <span>{quickMenuVisible ? "표시 중" : "숨김"}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              setAppTheme((theme) =>
+                theme === "musinsa" ? "light" : "musinsa",
+              )
+            }
+          >
+            <Moon size={17} />
+            테마 변경
+            <span>
+              {appTheme === "musinsa" ? "무신사 블랙" : "라이트 퍼플"}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              loadNews(true, feedMode === "stocks", watchlistRef.current)
+            }
+          >
+            <DatabaseZap size={17} />
+            데이터 동기화<span>실시간</span>
+          </button>
+        </section>
+        <section className="settings-list-card interest-settings-card">
+          <h2>관심 설정</h2>
+          {ThemeSearchBox()}
+          <div
+            className={
+              interestChipsExpanded
+                ? "chip-board compact expanded"
+                : "chip-board compact collapsed"
+            }
+          >
+            {visibleInterests.map((item) => (
+              <span
+                className={
+                  item.type === "theme" ? "managed-chip theme" : "managed-chip"
+                }
+                key={`${item.type}-${item.value}`}
+              >
+                {item.value}
+                <button
+                  onClick={() =>
+                    item.type === "theme"
+                      ? removeTheme(item.value)
+                      : removeStock(item.value)
+                  }
+                >
+                  <X size={13} />
+                </button>
+              </span>
+            ))}
+          </div>
+          {hasHiddenInterests && (
+            <button
+              type="button"
+              className="interest-expand-tab"
+              onClick={() => setInterestChipsExpanded((expanded) => !expanded)}
+            >
+              {interestChipsExpanded
+                ? "− 줄이기"
+                : `+ ${allInterests.length - chipLimit}개 더보기`}
+            </button>
+          )}
+        </section>
+        <section className="settings-list-card">
+          <h2>알림 기준</h2>
+          {ThresholdSlider({})}
+        </section>
+        <button
+          type="button"
+          className="logout-btn"
+          onClick={resetLocalSettings}
+        >
+          <LogOut size={17} /> 로컬 설정 초기화
+        </button>
+      </div>
+    );
+  }
+
+  function AlertsModal() {
+    const alertItems = alertNews.slice(0, 30);
+    return (
+      <div className="alerts-backdrop" onClick={() => setAlertsOpen(false)}>
+        <section
+          className="alerts-modal"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="alerts-head">
+            <div>
+              <span>ALERTS</span>
+              <h2>알림 뉴스</h2>
+            </div>
+            <div className="alerts-head-actions">
+              <button
+                type="button"
+                className="alert-clear-btn"
+                onClick={clearAllAlerts}
+                disabled={alertItems.length === 0}
+              >
+                모두제거
+              </button>
+              <button
+                type="button"
+                className="alert-close-btn"
+                onClick={() => setAlertsOpen(false)}
+              >
+                <X size={17} />
+              </button>
+            </div>
+          </div>
+          {alertItems.length === 0 ? (
+            <div className="empty-card">
+              현재 알림 기준에 맞는 뉴스가 없습니다.
+            </div>
+          ) : (
+            <div className="alerts-list">
+              {alertItems.map((item) => (
+                <button
+                  type="button"
+                  key={`alert-${item.id}`}
+                  onClick={() => revealNewsOnHome(item)}
+                >
+                  <strong>{item.title}</strong>
+                  <span>
+                    {item.source} · {formatTime(item.publishedAt)} ·{" "}
+                    {item.finalScore ?? item.importanceScore}/100
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+    );
+  }
+
+  function AlertsView() {
+    const alertItems = alertNews.slice(0, 30);
+    return (
+      <div className="page-card alerts-page-card">
+        <div className="back-title alerts-page-title">
+          <div>
+            <h1>알림</h1>
+            <p>알림 기준을 넘은 뉴스의 핵심 문구와 점수만 정리했습니다.</p>
+          </div>
+          <button
+            type="button"
+            className="alert-clear-btn page-clear"
+            onClick={clearAllAlerts}
+            disabled={alertItems.length === 0}
+          >
+            알림 모두제거
+          </button>
+        </div>
+        {alertItems.length === 0 ? (
+          <div className="empty-card">
+            현재 알림 기준에 맞는 뉴스가 없습니다.
+          </div>
+        ) : (
+          <div className="alerts-list page-alerts-list">
+            {alertItems.map((item) => (
+              <button
+                type="button"
+                key={`alerts-page-${item.id}`}
+                onClick={() => revealNewsOnHome(item)}
+              >
+                <strong>{item.title}</strong>
+                <span>
+                  {item.source} · {formatTime(item.publishedAt)} ·{" "}
+                  {item.finalScore ?? item.importanceScore}/100
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function MainContent() {
+    if (feedMode === "stocks") return StocksView();
+    if (feedMode === "aiStocks") return AiStocksView();
+    if (feedMode === "scanner") return ScannerView();
+    if (feedMode === "news")
+      return NewsListSection({ title: "전체 뉴스", items: visibleNews });
+    if (feedMode === "search") return SearchView();
+    if (feedMode === "alerts") return AlertsView();
+    if (feedMode === "settings") return SettingsView();
+    return HomeView();
+  }
 
   return (
-    <main>
-      {introVisible && (
-        <div className="app-splash" role="status" aria-live="polite">
-          <div className="splash-card">
-            <div className="splash-logo"><Radar size={26} /></div>
-            <div className="splash-eyebrow">Market Signal</div>
-            <h1>오늘의 시장 신호를 정리하고 있습니다.</h1>
-            <p>{loadingMessages[loadingStep]}</p>
-            <div className="splash-progress"><span /></div>
-            <div className="splash-steps">
-              <span className={loadingStep >= 0 ? 'active' : ''}>기사 수집</span>
-              <span className={loadingStep >= 1 ? 'active' : ''}>출처 판별</span>
-              <span className={loadingStep >= 2 ? 'active' : ''}>중요도 분류</span>
-            </div>
+    <main className="v7-shell">
+      {fullRefreshVisible && (
+        <div className="refresh-screen">
+          <div>
+            <span className="sync-loader">
+              <Loader2 className="spin" size={30} />
+            </span>
+            <strong>{refreshMessage}</strong>
+            <em>최신 뉴스와 관심 종목 흐름을 다시 정렬합니다.</em>
+            <i />
           </div>
         </div>
       )}
-      <div className="orb orb-a" />
-      <div className="orb orb-b" />
-
-      <div className="container">
-        <header className="header">
-          <div className="brand">
-            <div className="logo-mark"><Radar size={23} /></div>
-            <div>
-              <strong>Market Signal</strong>
-              <span>Fast Market News Radar</span>
-            </div>
-          </div>
-          <div className="header-actions">
-            <button type="button" className="ghost-btn" onClick={() => loadNews(false)} disabled={loading || refreshing}>
-              {refreshing || loading ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />} 새로고침
+      {DesktopSidebar()}
+      <section className="content-canvas">
+        <div
+          className={
+            mobileHeaderHidden ? "mobile-topbar is-hidden" : "mobile-topbar"
+          }
+        >
+          <button
+            type="button"
+            onClick={() => {
+              setMobileDrawerClosing(false);
+              setMobileSearchOpen(true);
+            }}
+            aria-label="메뉴 열기"
+          >
+            <Menu size={20} />
+          </button>
+          <strong>SKIM</strong>
+          <div className="mobile-topbar-actions">
+            <button
+              type="button"
+              className="mobile-alert-btn press-motion"
+              onClick={() => setAlertsOpen(true)}
+              aria-label="알림 열기"
+            >
+              <Bell size={18} />
+              <span>{alertNews.length}</span>
             </button>
-            <button type="button" className="ghost-btn settings-top-btn" onClick={toggleSettings}>
-              <Settings2 size={16} /> {feedMode === 'settings' ? '설정 닫기' : '설정'}
+            <button
+              type="button"
+              className="press-motion"
+              onClick={() =>
+                loadNews(true, feedMode === "stocks", watchlistRef.current)
+              }
+              aria-label="새로고침"
+            >
+              <RefreshCw size={19} />
             </button>
-            <button className="primary-btn" onClick={() => alert(`현재 알림 대상 뉴스는 ${alertNews.length}건입니다.`)}>
-              <Bell size={16} /> 알림
+          </div>
+        </div>
+        {(pullDistance > 0 || pullRefreshing) && (
+          <div
+            className="pull-refresh-meter"
+            style={
+              {
+                "--pull": `${Math.min(100, Math.round((pullDistance / 86) * 100))}%`,
+              } as CSSProperties
+            }
+          >
+            <Loader2 className={pullRefreshing ? "spin" : ""} size={18} />
+            <span>
+              {pullRefreshing
+                ? "새로고침 중"
+                : pullDistance >= 86
+                  ? "놓으면 새로고침"
+                  : "아래로 당겨 새로고침"}
+            </span>
+          </div>
+        )}
+        {MainContent()}
+      </section>
+      <button
+        type="button"
+        className="fixed-refresh-button press-motion"
+        onClick={() =>
+          loadNews(true, feedMode === "stocks", watchlistRef.current)
+        }
+        aria-label="뉴스 새로고침"
+      >
+        <RefreshCw size={21} />
+      </button>
+      {RightPanel()}
+
+      <nav
+        className={
+          quickMenuVisible ? "mobile-bottom-nav" : "mobile-bottom-nav is-hidden"
+        }
+        aria-hidden={!quickMenuVisible}
+      >
+        <button
+          className={feedMode === "home" ? "active" : ""}
+          onClick={() => openMode("home")}
+        >
+          <Home size={19} />
+          <span>홈</span>
+        </button>
+        <button
+          className={feedMode === "stocks" ? "active" : ""}
+          onClick={() => openMode("stocks")}
+        >
+          <ChartNoAxesCombined size={19} />
+          <span>내 주식</span>
+        </button>
+        <button className="center-action" onClick={() => openMode("search")}>
+          <Plus size={24} />
+        </button>
+        <button
+          className={feedMode === "aiStocks" ? "active" : ""}
+          onClick={() => openMode("aiStocks")}
+        >
+          <Sparkles size={19} />
+          <span>AI 추천</span>
+        </button>
+        <button
+          className={feedMode === "settings" ? "active" : ""}
+          onClick={() => openMode("settings")}
+        >
+          <Settings size={19} />
+          <span>설정</span>
+        </button>
+      </nav>
+
+      {mobileSearchOpen && (
+        <div
+          className={
+            mobileDrawerClosing
+              ? "mobile-drawer-backdrop is-closing"
+              : "mobile-drawer-backdrop"
+          }
+          onClick={closeMobileDrawer}
+        >
+          <aside
+            className={
+              mobileDrawerClosing ? "mobile-drawer is-closing" : "mobile-drawer"
+            }
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="drawer-close"
+              onClick={closeMobileDrawer}
+            >
+              <X size={17} />
             </button>
-          </div>
-        </header>
-
-        <section className="hero-panel">
-          <div className="hero-copy">
-            <div className="eyebrow"><Wifi size={15} /> 출처 품질을 분류하는 실시간 뉴스 스캐너</div>
-            <h1>뉴스와 개인 의견을 구분해, 시장 신호만 빠르게 보여드립니다.</h1>
-            <p>
-              한국경제와 미국경제를 기사별로 자동 분류하고, 공식 뉴스·시장 리포트·블로그/의견 글을 함께 판별합니다. 신뢰도·최신성·의견성까지 계산해 시장 신호를 빠르게 정리합니다.
-            </p>
-          </div>
-          <div className="hero-stats">
-            <div className="stat-card highlight"><span>TOP SCORE</span><strong>{topScore}</strong></div>
-            <div className="stat-card"><span>KOREA</span><strong>{koreaCount}</strong></div>
-            <div className="stat-card"><span>U.S.</span><strong>{usCount}</strong></div>
-          </div>
-        </section>
-
-        <section className="status-strip">
-          <span className={sourceMode === 'live' ? 'live-dot' : 'fail-dot'} />
-          <strong>{sourceMode === 'live' ? '실제 뉴스 연동 중' : '실제 뉴스 호출 실패 · 대체 데이터 표시'}</strong>
-          {lastUpdatedLabel && <span suppressHydrationWarning>마지막 갱신 {lastUpdatedLabel}</span>}
-          {newCount > 0 && <span className="new-badge">새 뉴스 {newCount}건 감지</span>}
-          {error && <span className="error-text">{error}</span>}
-          <span className="debug-chip">{debugText}</span>
-          {latencyMs !== null && <span className="debug-chip">응답 {latencyMs}ms</span>}
-        </section>
-
-        <div className="app-grid">
-          <section className={feedMode === 'settings' ? 'feed-panel settings-feed' : 'feed-panel'}>
-            <div className="section-head">
-              <div>
-                <span className="section-kicker">{feedMode === 'settings' ? 'SETTINGS' : feedMode === 'mystocks' ? 'MY STOCK FEED' : 'LIVE FEED'}</span>
-                <h2>{feedMode === 'settings' ? '관심 설정' : feedMode === 'mystocks' ? '내 주식 뉴스' : '중요 뉴스 피드'}</h2>
-              </div>
-              <span className="threshold-chip">종합점수 {thresholdDisplay}점 이상 알림</span>
-            </div>
-
-            <div className="feed-tabs">
-              <button className={feedMode === 'all' ? 'active' : ''} onClick={() => { setFeedMode('all'); setVisibleCount(PAGE_SIZE); }}>전체 {sortedNews.length}</button>
-              <button className={feedMode === 'mystocks' ? 'active' : ''} onClick={toggleMyStocksFeed}>내 주식 {myStocksCount}</button>
-              <button className={feedMode === 'korea' ? 'active' : ''} onClick={() => { setFeedMode('korea'); setVisibleCount(PAGE_SIZE); }}>한국경제 {koreaCount}</button>
-              <button className={feedMode === 'us' ? 'active' : ''} onClick={() => { setFeedMode('us'); setVisibleCount(PAGE_SIZE); }}>미국경제 {usCount}</button>
-              <button className={feedMode === 'global' ? 'active' : ''} onClick={() => { setFeedMode('global'); setVisibleCount(PAGE_SIZE); }}>글로벌/기타 {globalCount}</button>
-              <button className={feedMode === 'trusted' ? 'active' : ''} onClick={() => { setFeedMode('trusted'); setVisibleCount(PAGE_SIZE); }}>공식/리포트 {trustedCount}</button>
-              <button className={feedMode === 'hot' ? 'active' : ''} onClick={() => { setFeedMode('hot'); setVisibleCount(PAGE_SIZE); }}>알림대상 {alertNews.length}</button>
-              <button className={feedMode === 'opinion' ? 'active' : ''} onClick={() => { setFeedMode('opinion'); setVisibleCount(PAGE_SIZE); }}>참고의견 {opinionCount}</button>
-              <button className={feedMode === 'settings' ? 'active' : ''} onClick={() => changeFeed('settings')}>설정</button>
-            </div>
-
-            {feedMode === 'settings' ? (
-              SettingsPanel({ compact: true })
-            ) : (
-              <>
-                {feedMode === 'mystocks' && MyStockFeedManager()}
-
-                {feedMode !== 'opinion' && (
-                  <div className="hot-rail" aria-label="사용자 고정 뉴스">
-                    <div className="hot-rail-title"><Flame size={16} /> 중요 뉴스 상단 고정 <span>{pinnedHotNews.length}건</span></div>
-                    {pinnedHotNews.length === 0 ? (
-                      <div className="pin-empty"><Pin size={16} /> 카드의 고정 버튼을 누르면 이곳에 모아볼 수 있습니다.</div>
-                    ) : (
-                      <div className="hot-rail-grid">
-                        {pinnedHotNews.map((item) => (
-                          <div className="hot-tile pinned-tile" key={item.id}>
-                            <button type="button" className="pin-remove" onClick={() => removePinnedNews(item.id)} aria-label="고정 뉴스 제거"><X size={14} /></button>
-                            <a href={item.originalUrl} target="_blank" rel="noreferrer">
-                              <span>{item.marketRegionLabel}</span>
-                              <strong>{item.title}</strong>
-                              <em>종합 {item.finalScore}</em>
-                            </a>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {(loading || refreshing) && <SkeletonFeed />}
-
-                {loading && visibleNews.length === 0 ? (
-                  <div className="empty"><Loader2 className="spin" /> 실시간 뉴스를 불러오는 중입니다.</div>
-                ) : visibleNews.length === 0 ? (
-                  <div className="empty">{feedMode === 'mystocks' ? '관심 종목 기준으로 뉴스 공급원을 별도 검색했지만 아직 표시할 기사가 없습니다. 종목 별칭/뉴스 공급원에 따라 잠시 후 다시 검색해 주세요.' : '표시할 뉴스가 없습니다. 새로고침을 다시 눌러주세요.'}</div>
-                ) : (
-                  <>
-                    <div className="news-list">
-                      {visibleNews.map((item) => (
-                        <NewsCard
-                          key={item.id}
-                          news={item}
-                          threshold={threshold}
-                          isNew={newIds.includes(item.id)}
-                          watchSet={watchSet}
-                          onToggleTheme={toggleTheme}
-                          onToggleStock={toggleStock}
-                          compact={compactMode}
-                          pinned={pinnedNewsIds.includes(item.id)}
-                          onTogglePin={() => togglePinnedNews(item)}
-                        />
-                      ))}
-                    </div>
-
-                    {hasMore && (
-                      <button className="load-more" onClick={() => setVisibleCount((count) => count + PAGE_SIZE)}>
-                        <Plus size={18} /> 뉴스 더 보기 <span>{Math.min(PAGE_SIZE, filteredNews.length - visibleCount)}개</span>
-                        <ChevronDown size={18} />
-                      </button>
-                    )}
-                  </>
-                )}
-              </>
-            )}
-          </section>
-
-          <aside className={`control-panel ${isNearBottom ? 'bottom-reached' : ''}`}>
-            <div className="side-menu-card">
-              <div className="panel-title compact-title"><Radar size={16} /> 빠른 메뉴</div>
-              <QuickRegionMenu placement="side" />
-            </div>
-
-            <div className="panel-card">
-              <div className="panel-title"><Settings2 size={17} /> 필터 설정</div>
-              <ThresholdSlider
-                label="알림 중요도"
-                helper="종합점수는 중요도, 신뢰도, 최신성을 더하고 개인 의견성은 감점해서 계산합니다."
-              />
-            </div>
-
-            <div className="panel-card quick-watch-card">
-              <div className="panel-title"><Search size={17} /> 관심 요약</div>
-              <div className="watch-summary">
-                <strong>테마 {watchThemes.length}</strong>
-                <span>{watchThemes.slice(0, 4).join(' · ') || '없음'}</span>
-              </div>
-              <div className="watch-summary">
-                <strong>종목 {watchStocks.length}</strong>
-                <span>{watchStocks.slice(0, 4).join(' · ') || '없음'}</span>
-              </div>
-              <button type="button" className="settings-shortcut" onClick={toggleSettings}><Settings2 size={16} /> 설정 관리</button>
-            </div>
-
-            <div className="panel-card note-card">
-              <strong>운영 방식</strong>
-              <p>DB 저장 없이 API 응답과 브라우저 캐시만 사용합니다. 블로그/개인 의견은 제거하지 않고 참고 피드로 분리해 판단 근거를 보존합니다.</p>
-            </div>
+            {DesktopSidebar()}
           </aside>
         </div>
+      )}
 
-        <footer className="footer">Market Signal v3.4 · Dark Glass UI · Stable Inputs · My Stock UX · Responsive QA · No DB</footer>
-      </div>
+      {alertsOpen && AlertsModal()}
 
-
-      <div className={`bottom-nav-shell ${isNearBottom ? 'show' : ''}`}>
-        <QuickRegionMenu placement="bottom" />
-      </div>
+      {selectedNews && (
+        <div className="detail-backdrop" onClick={() => setSelectedNews(null)}>
+          <article
+            className="news-detail-sheet premium-detail"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="drawer-close"
+              onClick={() => setSelectedNews(null)}
+            >
+              <X size={17} />
+            </button>
+            <div className="detail-hero-row">
+              <span className="label top">TOP</span>
+              <span className="detail-source-pill">
+                {selectedNews.source} · {formatTime(selectedNews.publishedAt)}
+              </span>
+            </div>
+            <h1>{selectedNews.title}</h1>
+            <div className="detail-visual-card">
+              <div className="detail-image">
+                <span>{selectedNews.source.slice(0, 1)}</span>
+              </div>
+              <div className="detail-score-card">
+                <strong>{selectedNews.finalScore}</strong>
+                <span>/100</span>
+                <i
+                  style={{
+                    width: `${Math.max(8, Math.min(100, selectedNews.finalScore))}%`,
+                  }}
+                />
+              </div>
+            </div>
+            <section className="detail-summary-card">
+              <b>AI 요약</b>
+              <p>{selectedNews.summary}</p>
+            </section>
+            <div className="detail-metrics premium">
+              <span>
+                <b>{selectedNews.importanceScore}</b>중요도
+              </span>
+              <span>
+                <b>{selectedNews.reliabilityScore}</b>신뢰도
+              </span>
+              <span>
+                <b>{selectedNews.freshnessScore}</b>최신성
+              </span>
+              <span>
+                <b>{selectedNews.opinionScore}</b>의견성
+              </span>
+            </div>
+            <a
+              className="detail-primary-link"
+              href={selectedNews.originalUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              기사 원문 보기
+            </a>
+          </article>
+        </div>
+      )}
     </main>
   );
 }
